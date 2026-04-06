@@ -27,7 +27,9 @@ import type {
 } from "./project";
 import type {
   ServerConfig,
+  ServerLogToastInput,
   ServerProviderUpdatedPayload,
+  ServerUsageLimitsPayload,
   ServerUpsertKeybindingResult,
 } from "./server";
 import type {
@@ -165,10 +167,12 @@ export interface NativeApi {
   };
   server: {
     getConfig: () => Promise<ServerConfig>;
+    getUsageLimits: () => Promise<ServerUsageLimitsPayload>;
     refreshProviders: () => Promise<ServerProviderUpdatedPayload>;
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
+    logToast: (input: ServerLogToastInput) => Promise<void>;
   };
   orchestration: {
     getSnapshot: () => Promise<OrchestrationReadModel>;

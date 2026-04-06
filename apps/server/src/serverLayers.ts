@@ -23,6 +23,8 @@ import { makeCodexAdapterLive } from "./provider/Layers/CodexAdapter";
 import { ProviderAdapterRegistryLive } from "./provider/Layers/ProviderAdapterRegistry";
 import { makeProviderServiceLive } from "./provider/Layers/ProviderService";
 import { ProviderSessionDirectoryLive } from "./provider/Layers/ProviderSessionDirectory";
+import { SubscriptionManagerLive } from "./provider/Layers/SubscriptionManagerLive";
+import { CodexAdapter } from "./provider/Services/CodexAdapter";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { makeEventNdjsonLogger } from "./provider/Layers/EventNdjsonLogger";
 import { ServerSettingsService } from "./serverSettings";
@@ -54,7 +56,7 @@ const makeRuntimePtyAdapterLayer = () =>
   }).pipe(Layer.unwrap);
 
 export function makeServerProviderLayer(): Layer.Layer<
-  ProviderService,
+  ProviderService | CodexAdapter,
   ProviderUnsupportedError,
   | SqlClient.SqlClient
   | ServerConfig
@@ -73,24 +75,30 @@ export function makeServerProviderLayer(): Layer.Layer<
     const providerSessionDirectoryLayer = ProviderSessionDirectoryLive.pipe(
       Layer.provide(ProviderSessionRuntimeRepositoryLive),
     );
+    const subscriptionManagerLayer = SubscriptionManagerLive;
     const codexAdapterLayer = makeCodexAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
+    ).pipe(Layer.provide(subscriptionManagerLayer));
     const claudeAdapterLayer = makeClaudeAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
+    ).pipe(Layer.provide(subscriptionManagerLayer));
     const copilotAdapterLayer = makeCopilotAdapterLive(
       nativeEventLogger ? { nativeEventLogger } : undefined,
-    );
+    ).pipe(Layer.provide(subscriptionManagerLayer));
     const adapterRegistryLayer = ProviderAdapterRegistryLive.pipe(
       Layer.provide(codexAdapterLayer),
       Layer.provide(claudeAdapterLayer),
       Layer.provide(copilotAdapterLayer),
       Layer.provideMerge(providerSessionDirectoryLayer),
     );
-    return makeProviderServiceLive(
-      canonicalEventLogger ? { canonicalEventLogger } : undefined,
-    ).pipe(Layer.provide(adapterRegistryLayer), Layer.provide(providerSessionDirectoryLayer));
+    return Layer.mergeAll(
+      codexAdapterLayer,
+      makeProviderServiceLive(canonicalEventLogger ? { canonicalEventLogger } : undefined).pipe(
+        Layer.provide(adapterRegistryLayer),
+        Layer.provide(providerSessionDirectoryLayer),
+        Layer.provide(subscriptionManagerLayer),
+      ),
+    );
   }).pipe(Layer.unwrap);
 }
 
@@ -144,6 +152,7 @@ export function makeServerRuntimeServicesLayer() {
   return Layer.mergeAll(
     orchestrationReactorLayer,
     GitCoreLive,
+    GitHubCliLive,
     gitManagerLayer,
     terminalLayer,
     KeybindingsLive,

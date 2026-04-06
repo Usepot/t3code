@@ -26,6 +26,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterValidationError } from "../Errors.ts";
 import { CodexAdapter } from "../Services/CodexAdapter.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { SubscriptionManager } from "../Services/SubscriptionManager.ts";
 import { makeCodexAdapterLive } from "./CodexAdapter.ts";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
@@ -34,6 +35,7 @@ const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
 const asItemId = (value: string): ProviderItemId => ProviderItemId.makeUnsafe(value);
 
 class FakeCodexManager extends CodexAppServerManager {
+  public latestRateLimitsValue: unknown | null = null;
   public startSessionImpl = vi.fn(
     async (input: CodexAppServerStartSessionInput): Promise<ProviderSession> => {
       const now = new Date().toISOString();
@@ -137,6 +139,10 @@ class FakeCodexManager extends CodexAppServerManager {
   override stopAll(): void {
     this.stopAllImpl();
   }
+
+  override getLatestRateLimits(): unknown | null {
+    return this.latestRateLimitsValue;
+  }
 }
 
 const providerSessionDirectoryTestLayer = Layer.succeed(ProviderSessionDirectory, {
@@ -153,6 +159,7 @@ const validationLayer = it.layer(
   makeCodexAdapterLive({ manager: validationManager }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
     Layer.provideMerge(NodeServices.layer),
   ),
@@ -210,6 +217,48 @@ validationLayer("CodexAdapterLive validation", (it) => {
       });
     }),
   );
+  it.effect("returns an unavailable usage snapshot until Codex reports rate limits", () =>
+    Effect.gen(function* () {
+      validationManager.latestRateLimitsValue = null;
+      const adapter = yield* CodexAdapter;
+      const snapshot = yield* adapter.getUsageLimits();
+
+      assert.deepStrictEqual(snapshot, {
+        source: "codex",
+        available: false,
+        checkedAt: snapshot.checkedAt,
+        message: "Start a Codex session to fetch current Codex rate limits.",
+        buckets: [],
+      });
+    }),
+  );
+  it.effect("normalizes latest Codex rate-limit buckets", () =>
+    Effect.gen(function* () {
+      validationManager.latestRateLimitsValue = {
+        rateLimitsByLimitId: {
+          codex: {
+            usedPercent: 17,
+            windowDurationMins: 60,
+            resetsAt: 1_775_526_400,
+          },
+        },
+      };
+      const adapter = yield* CodexAdapter;
+      const snapshot = yield* adapter.getUsageLimits();
+
+      assert.equal(snapshot.source, "codex");
+      assert.equal(snapshot.available, true);
+      assert.deepStrictEqual(snapshot.buckets, [
+        {
+          id: "codex",
+          label: "Codex",
+          usedPercent: 17,
+          windowDurationMins: 60,
+          resetsAt: "2026-04-10T18:00:00.000Z",
+        },
+      ]);
+    }),
+  );
 });
 
 const sessionErrorManager = new FakeCodexManager();
@@ -220,6 +269,7 @@ const sessionErrorLayer = it.layer(
   makeCodexAdapterLive({ manager: sessionErrorManager }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
     Layer.provideMerge(NodeServices.layer),
   ),
@@ -289,6 +339,7 @@ const lifecycleLayer = it.layer(
   makeCodexAdapterLive({ manager: lifecycleManager }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(providerSessionDirectoryTestLayer),
     Layer.provideMerge(NodeServices.layer),
   ),
@@ -471,6 +522,60 @@ lifecycleLayer("CodexAdapterLive lifecycle", (it) => {
       }
       assert.equal(firstEvent.value.turnId, "turn-1");
       assert.equal(firstEvent.value.payload.message, "Reconnecting... 2/5");
+    }),
+  );
+
+  it.effect("maps MCP auth-required stderr into mcp.status.updated and runtime.warning", () =>
+    Effect.gen(function* () {
+      const adapter = yield* CodexAdapter;
+      const eventsFiber = yield* Stream.runCollect(Stream.take(adapter.streamEvents, 2)).pipe(
+        Effect.forkChild,
+      );
+
+      lifecycleManager.emit("event", {
+        id: asEventId("evt-mcp-auth-required"),
+        kind: "error",
+        provider: "codex",
+        threadId: asThreadId("thread-1"),
+        createdAt: new Date().toISOString(),
+        method: "process/stderr",
+        message:
+          '2026-04-06T18:13:25.163631Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\\"OAuth\\", resource_metadata=\\"https://mcp.linear.app/.well-known/oauth-protected-resource\\", error=\\"invalid_token\\", error_description=\\"Missing or invalid access token\\"" })',
+      } satisfies ProviderEvent);
+
+      const events = Array.from(yield* Fiber.join(eventsFiber));
+      assert.equal(events.length, 2);
+
+      const firstEvent = events[0];
+      const secondEvent = events[1];
+
+      assert.equal(firstEvent?.type, "mcp.status.updated");
+      if (firstEvent?.type === "mcp.status.updated") {
+        assert.deepEqual(firstEvent.payload.status, {
+          state: "auth_required",
+          name: "linear",
+          resourceMetadataUrl: "https://mcp.linear.app/.well-known/oauth-protected-resource",
+          error: "invalid_token",
+          errorDescription: "Missing or invalid access token",
+          rawMessage:
+            '2026-04-06T18:13:25.163631Z ERROR rmcp::transport::worker: worker quit with fatal: Transport channel closed, when AuthRequired(AuthRequiredError { www_authenticate_header: "Bearer realm=\\"OAuth\\", resource_metadata=\\"https://mcp.linear.app/.well-known/oauth-protected-resource\\", error=\\"invalid_token\\", error_description=\\"Missing or invalid access token\\"" })',
+        });
+      }
+
+      assert.equal(secondEvent?.type, "runtime.warning");
+      if (secondEvent?.type === "runtime.warning") {
+        assert.equal(
+          secondEvent.payload.message,
+          "linear requires authentication: Missing or invalid access token",
+        );
+        assert.deepEqual(secondEvent.payload.detail, {
+          kind: "mcp_auth_required",
+          name: "linear",
+          resourceMetadataUrl: "https://mcp.linear.app/.well-known/oauth-protected-resource",
+          error: "invalid_token",
+          errorDescription: "Missing or invalid access token",
+        });
+      }
     }),
   );
 

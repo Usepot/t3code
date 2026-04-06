@@ -38,8 +38,10 @@ import {
 } from "../../codexAppServerManager.ts";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
+import { createUnavailableUsageSnapshot, normalizeCodexUsageLimits } from "../../serverUsageLimits";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
+import { SubscriptionManager } from "../Services/SubscriptionManager.ts";
 
 const PROVIDER = "codex" as const;
 
@@ -109,6 +111,41 @@ function asArray(value: unknown): unknown[] | undefined {
 
 function asNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+interface ParsedMcpAuthRequiredError {
+  readonly name?: string;
+  readonly resourceMetadataUrl?: string;
+  readonly oauthError?: string;
+  readonly errorDescription?: string;
+}
+
+function parseMcpAuthRequiredError(message: string): ParsedMcpAuthRequiredError | undefined {
+  if (!message.includes("AuthRequired(")) {
+    return undefined;
+  }
+
+  const resourceMetadataUrl = /resource_metadata=\\"([^"]+)\\"/.exec(message)?.[1];
+  const oauthError = /error=\\"([^"]+)\\"/.exec(message)?.[1];
+  const errorDescription = /error_description=\\"([^"]+)\\"/.exec(message)?.[1];
+
+  let name: string | undefined;
+  if (resourceMetadataUrl) {
+    try {
+      const host = new URL(resourceMetadataUrl).hostname.trim().toLowerCase();
+      const hostWithoutPrefix = host.startsWith("mcp.") ? host.slice(4) : host;
+      name = hostWithoutPrefix.split(".")[0];
+    } catch {
+      // Leave the name undefined when the metadata URL is malformed.
+    }
+  }
+
+  return {
+    ...(name ? { name } : {}),
+    ...(resourceMetadataUrl ? { resourceMetadataUrl } : {}),
+    ...(oauthError ? { oauthError } : {}),
+    ...(errorDescription ? { errorDescription } : {}),
+  };
 }
 
 function normalizeCodexTokenUsage(value: unknown): ThreadTokenUsageSnapshot | undefined {
@@ -578,6 +615,55 @@ function mapToRuntimeEvents(
   if (event.kind === "error") {
     if (!event.message) {
       return [];
+    }
+    const parsedMcpAuthRequiredError =
+      event.method === "process/stderr" ? parseMcpAuthRequiredError(event.message) : undefined;
+    if (parsedMcpAuthRequiredError) {
+      const warningMessage = parsedMcpAuthRequiredError.errorDescription
+        ? `${parsedMcpAuthRequiredError.name ?? "MCP server"} requires authentication: ${parsedMcpAuthRequiredError.errorDescription}`
+        : `${parsedMcpAuthRequiredError.name ?? "MCP server"} requires authentication.`;
+      return [
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "mcp.status.updated",
+          payload: {
+            status: {
+              state: "auth_required",
+              ...(parsedMcpAuthRequiredError.name ? { name: parsedMcpAuthRequiredError.name } : {}),
+              ...(parsedMcpAuthRequiredError.resourceMetadataUrl
+                ? { resourceMetadataUrl: parsedMcpAuthRequiredError.resourceMetadataUrl }
+                : {}),
+              ...(parsedMcpAuthRequiredError.oauthError
+                ? { error: parsedMcpAuthRequiredError.oauthError }
+                : {}),
+              ...(parsedMcpAuthRequiredError.errorDescription
+                ? { errorDescription: parsedMcpAuthRequiredError.errorDescription }
+                : {}),
+              rawMessage: event.message,
+            },
+          },
+        },
+        {
+          ...runtimeEventBase(event, canonicalThreadId),
+          type: "runtime.warning",
+          payload: {
+            message: warningMessage,
+            detail: {
+              kind: "mcp_auth_required",
+              ...(parsedMcpAuthRequiredError.name ? { name: parsedMcpAuthRequiredError.name } : {}),
+              ...(parsedMcpAuthRequiredError.resourceMetadataUrl
+                ? { resourceMetadataUrl: parsedMcpAuthRequiredError.resourceMetadataUrl }
+                : {}),
+              ...(parsedMcpAuthRequiredError.oauthError
+                ? { error: parsedMcpAuthRequiredError.oauthError }
+                : {}),
+              ...(parsedMcpAuthRequiredError.errorDescription
+                ? { errorDescription: parsedMcpAuthRequiredError.errorDescription }
+                : {}),
+            },
+          },
+        },
+      ];
     }
     return [
       {
@@ -1344,6 +1430,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         }),
     );
     const serverSettingsService = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
 
     const startSession: CodexAdapterShape["startSession"] = Effect.fn(function* (input) {
       if (input.provider !== undefined && input.provider !== PROVIDER) {
@@ -1367,7 +1454,9 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         ),
       );
       const binaryPath = codexSettings.binaryPath;
-      const homePath = codexSettings.homePath;
+      const homePath = yield* subscriptionManager
+        .getEffectiveConfigPath(PROVIDER)
+        .pipe(Effect.orElseSucceed(() => codexSettings.homePath || undefined));
       const managerInput: CodexAppServerStartSessionInput = {
         threadId: input.threadId,
         provider: "codex",
@@ -1539,6 +1628,20 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
         manager.stopAll();
       });
 
+    const getUsageLimits: CodexAdapterShape["getUsageLimits"] = () =>
+      Effect.sync(() => {
+        const checkedAt = new Date().toISOString();
+        const latestRateLimits = manager.getLatestRateLimits();
+        if (!latestRateLimits) {
+          return createUnavailableUsageSnapshot({
+            source: "codex",
+            checkedAt,
+            message: "Start a Codex session to fetch current Codex rate limits.",
+          });
+        }
+        return normalizeCodexUsageLimits(latestRateLimits, checkedAt);
+      });
+
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
 
     yield* Effect.acquireRelease(
@@ -1595,6 +1698,7 @@ const makeCodexAdapter = (options?: CodexAdapterLiveOptions) =>
       listSessions,
       hasSession,
       stopAll,
+      getUsageLimits,
       streamEvents: Stream.fromQueue(runtimeEventQueue),
     } satisfies CodexAdapterShape;
   });

@@ -9,6 +9,7 @@ import {
   type GitHubCliShape,
   type GitHubPullRequestSummary,
 } from "../Services/GitHubCli.ts";
+import { normalizeGitHubUsageLimits } from "../../serverUsageLimits";
 
 const DEFAULT_TIMEOUT_MS = 30_000;
 
@@ -272,6 +273,16 @@ const makeGitHubCli = Effect.sync(() => {
         cwd: input.cwd,
         args: ["pr", "checkout", input.reference, ...(input.force ? ["--force"] : [])],
       }).pipe(Effect.asVoid),
+    getUsageLimits: (input) =>
+      execute({
+        cwd: input.cwd,
+        args: ["api", "rate_limit"],
+      }).pipe(
+        Effect.map((result) =>
+          normalizeGitHubUsageLimits(JSON.parse(result.stdout), new Date().toISOString()),
+        ),
+        Effect.mapError((error) => normalizeGitHubCliError("stdout", error)),
+      ),
   } satisfies GitHubCliShape;
 
   return service;

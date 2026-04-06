@@ -9,6 +9,7 @@ import { Effect, Equal, Layer, PubSub, Ref, Stream } from "effect";
 import { ClaudeProviderLive } from "./ClaudeProvider";
 import { CopilotProviderLive } from "./CopilotProvider";
 import { CodexProviderLive } from "./CodexProvider";
+import { SubscriptionManagerLive } from "./SubscriptionManagerLive";
 import type { ClaudeProviderShape } from "../Services/ClaudeProvider";
 import { ClaudeProvider } from "../Services/ClaudeProvider";
 import type { CopilotProviderShape } from "../Services/CopilotProvider";
@@ -105,6 +106,7 @@ export const ProviderRegistryLive = Layer.effect(
     } satisfies ProviderRegistryShape;
   }),
 ).pipe(
+  Layer.provideMerge(SubscriptionManagerLive),
   Layer.provideMerge(CodexProviderLive),
   Layer.provideMerge(ClaudeProviderLive),
   Layer.provideMerge(CopilotProviderLive),

@@ -92,17 +92,20 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "/Users/julius/.codex",
         customModels: [],
+        subscriptions: [],
       });
       assert.deepEqual(next.providers.claudeAgent, {
         enabled: true,
         binaryPath: "/usr/local/bin/claude",
         customModels: ["claude-custom"],
+        subscriptions: [],
       });
       assert.deepEqual(next.providers.copilot, {
         enabled: true,
         binaryPath: "/usr/local/bin/copilot",
         configDir: "/Users/julius/.config/copilot",
         customModels: ["copilot-custom"],
+        subscriptions: [],
       });
       assert.deepEqual(next.textGenerationModelSelection, {
         provider: "codex",
@@ -140,17 +143,20 @@ it.layer(NodeServices.layer)("server settings", (it) => {
         binaryPath: "/opt/homebrew/bin/codex",
         homePath: "",
         customModels: [],
+        subscriptions: [],
       });
       assert.deepEqual(next.providers.claudeAgent, {
         enabled: true,
         binaryPath: "/opt/homebrew/bin/claude",
         customModels: [],
+        subscriptions: [],
       });
       assert.deepEqual(next.providers.copilot, {
         enabled: true,
         binaryPath: "/opt/homebrew/bin/copilot",
         configDir: "/Users/julius/.config/copilot",
         customModels: [],
+        subscriptions: [],
       });
     }).pipe(Effect.provide(makeServerSettingsLayer())),
   );

@@ -30,7 +30,9 @@ import {
   parseCodexCliVersion,
 } from "../codexCliVersion";
 import { CodexProvider } from "../Services/CodexProvider";
+import { SubscriptionManager } from "../Services/SubscriptionManager";
 import { ServerSettingsError, ServerSettingsService } from "../../serverSettings";
+import { SubscriptionManagerLive } from "./SubscriptionManagerLive";
 
 const PROVIDER = "codex" as const;
 const OPENAI_AUTH_PROVIDERS = new Set(["openai"]);
@@ -245,15 +247,13 @@ export function parseAuthStatusFromOutput(result: CommandResult): {
 export const readCodexConfigModelProvider = Effect.fn("readCodexConfigModelProvider")(function* () {
   const fileSystem = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const settingsService = yield* ServerSettingsService;
-  const codexHome = yield* settingsService.getSettings.pipe(
-    Effect.map(
-      (settings) =>
-        settings.providers.codex.homePath ||
-        process.env.CODEX_HOME ||
-        path.join(OS.homedir(), ".codex"),
-    ),
-  );
+  const subscriptionManager = yield* SubscriptionManager;
+  const codexHome =
+    (yield* subscriptionManager
+      .getEffectiveConfigPath("codex")
+      .pipe(Effect.orElseSucceed(() => undefined))) ??
+    process.env.CODEX_HOME ??
+    path.join(OS.homedir(), ".codex");
   const configPath = path.join(codexHome, "config.toml");
 
   const content = yield* fileSystem
@@ -288,14 +288,18 @@ const runCodexCommand = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
     const settingsService = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
     const codexSettings = yield* settingsService.getSettings.pipe(
       Effect.map((settings) => settings.providers.codex),
     );
+    const effectiveHomePath = yield* subscriptionManager
+      .getEffectiveConfigPath("codex")
+      .pipe(Effect.orElseSucceed(() => codexSettings.homePath || undefined));
     const command = ChildProcess.make(codexSettings.binaryPath, [...args], {
       shell: process.platform === "win32",
       env: {
         ...process.env,
-        ...(codexSettings.homePath ? { CODEX_HOME: codexSettings.homePath } : {}),
+        ...(effectiveHomePath ? { CODEX_HOME: effectiveHomePath } : {}),
       },
     });
 
@@ -320,6 +324,7 @@ export const checkCodexProviderStatus = Effect.fn("checkCodexProviderStatus")(
     | FileSystem.FileSystem
     | Path.Path
     | ServerSettingsService
+    | SubscriptionManager
   > {
     const codexSettings = yield* Effect.service(ServerSettingsService).pipe(
       Effect.flatMap((service) => service.getSettings),
@@ -505,11 +510,13 @@ export const CodexProviderLive = Layer.effect(
   CodexProvider,
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
     const fileSystem = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
     const checkProvider = checkCodexProviderStatus().pipe(
+      Effect.provideService(SubscriptionManager, subscriptionManager),
       Effect.provideService(ServerSettingsService, serverSettings),
       Effect.provideService(FileSystem.FileSystem, fileSystem),
       Effect.provideService(Path.Path, path),
@@ -528,4 +535,4 @@ export const CodexProviderLive = Layer.effect(
       checkProvider,
     });
   }),
-);
+).pipe(Layer.provideMerge(SubscriptionManagerLive));

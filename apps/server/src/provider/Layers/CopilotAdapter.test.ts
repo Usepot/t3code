@@ -12,6 +12,7 @@ import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
 import { ProviderAdapterProcessError, ProviderAdapterValidationError } from "../Errors.ts";
 import { CopilotAdapter } from "../Services/CopilotAdapter.ts";
+import { SubscriptionManager } from "../Services/SubscriptionManager.ts";
 import { makeCopilotAdapterLive } from "./CopilotAdapter.ts";
 
 const asThreadId = (value: string): ThreadId => ThreadId.makeUnsafe(value);
@@ -174,6 +175,7 @@ const modeLayer = it.layer(
   }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(NodeServices.layer),
   ),
 );
@@ -222,6 +224,7 @@ const planLayer = it.layer(
   }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(NodeServices.layer),
   ),
 );
@@ -292,6 +295,7 @@ const reasoningLayer = it.layer(
   }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(NodeServices.layer),
   ),
 );
@@ -494,6 +498,7 @@ const toolEventLayer = it.layer(
   }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(NodeServices.layer),
   ),
 );
@@ -606,6 +611,7 @@ const toolTitleLayer = it.layer(
   }).pipe(
     Layer.provideMerge(ServerConfig.layerTest(process.cwd(), process.cwd())),
     Layer.provideMerge(ServerSettingsService.layerTest()),
+    Layer.provideMerge(SubscriptionManager.layerTest()),
     Layer.provideMerge(NodeServices.layer),
   ),
 );

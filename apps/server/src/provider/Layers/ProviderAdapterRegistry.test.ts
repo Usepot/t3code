@@ -15,6 +15,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 const fakeCodexAdapter: CodexAdapterShape = {
   provider: "codex",
   capabilities: { sessionModelSwitch: "in-session" },
+  getUsageLimits: vi.fn(),
   startSession: vi.fn(),
   sendTurn: vi.fn(),
   interruptTurn: vi.fn(),

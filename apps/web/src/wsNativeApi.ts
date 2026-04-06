@@ -210,10 +210,12 @@ export function createWsNativeApi(): NativeApi {
     },
     server: {
       getConfig: () => transport.request(WS_METHODS.serverGetConfig),
+      getUsageLimits: () => transport.request(WS_METHODS.serverGetUsageLimits),
       refreshProviders: () => transport.request(WS_METHODS.serverRefreshProviders),
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
       getSettings: () => transport.request(WS_METHODS.serverGetSettings),
       updateSettings: (patch) => transport.request(WS_METHODS.serverUpdateSettings, { patch }),
+      logToast: (input) => transport.request(WS_METHODS.serverLogToast, input),
     },
     orchestration: {
       getSnapshot: () => transport.request(ORCHESTRATION_WS_METHODS.getSnapshot),

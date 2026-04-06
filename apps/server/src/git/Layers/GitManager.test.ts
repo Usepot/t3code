@@ -441,6 +441,14 @@ function createGitHubCliWithFakeGh(scenario: FakeGhScenario = {}): {
           cwd: input.cwd,
           args: ["pr", "checkout", input.reference, ...(input.force ? ["--force"] : [])],
         }).pipe(Effect.asVoid),
+      getUsageLimits: () =>
+        Effect.succeed({
+          source: "github",
+          available: false,
+          checkedAt: "2026-04-06T00:00:00.000Z",
+          message: "Not used in this test harness.",
+          buckets: [],
+        }),
     },
     ghCalls,
   };

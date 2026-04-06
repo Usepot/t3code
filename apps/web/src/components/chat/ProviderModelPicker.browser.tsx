@@ -111,6 +111,7 @@ async function mountPicker(props: {
   lockedProvider: ProviderKind | null;
   providers?: ReadonlyArray<ServerProvider>;
   triggerVariant?: "ghost" | "outline";
+  canBranchFromHistory?: boolean;
 }) {
   const host = document.createElement("div");
   document.body.append(host);
@@ -129,6 +130,9 @@ async function mountPicker(props: {
       lockedProvider={props.lockedProvider}
       providers={providers}
       modelOptionsByProvider={modelOptionsByProvider}
+      {...(props.canBranchFromHistory !== undefined
+        ? { canBranchFromHistory: props.canBranchFromHistory }
+        : {})}
       triggerVariant={props.triggerVariant}
       onProviderModelChange={onProviderModelChange}
     />,
@@ -236,6 +240,28 @@ describe("ProviderModelPicker", () => {
     }
   });
 
+  it("shows a back action that unlocks cross-provider selection for history branching", async () => {
+    const mounted = await mountPicker({
+      provider: "claudeAgent",
+      model: "claude-opus-4-6",
+      lockedProvider: "claudeAgent",
+      canBranchFromHistory: true,
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByRole("menuitem", { name: "Back" }).click();
+
+      await vi.waitFor(() => {
+        const text = document.body.textContent ?? "";
+        expect(text).toContain("Codex");
+        expect(text).toContain("Claude");
+      });
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
   it("dispatches the canonical slug when a model is selected", async () => {
     const mounted = await mountPicker({
       provider: "claudeAgent",
@@ -250,7 +276,36 @@ describe("ProviderModelPicker", () => {
       expect(mounted.onProviderModelChange).toHaveBeenCalledWith(
         "claudeAgent",
         "claude-sonnet-4-6",
+        {
+          branchFromHistory: false,
+        },
       );
+    } finally {
+      await mounted.cleanup();
+    }
+  });
+
+  it("marks branch selections when history branching is enabled", async () => {
+    const mounted = await mountPicker({
+      provider: "claudeAgent",
+      model: "claude-opus-4-6",
+      lockedProvider: "claudeAgent",
+      canBranchFromHistory: true,
+    });
+
+    try {
+      await page.getByRole("button").click();
+      await page.getByRole("menuitem", { name: "Back" }).click();
+      const providerTrigger = page.getByRole("menuitem", { name: "Codex" });
+      await providerTrigger.hover();
+      await vi.waitFor(() => {
+        expect(document.body.textContent ?? "").toContain("GPT-5 Codex");
+      });
+      await page.getByRole("menuitemradio", { name: "GPT-5.3 Codex" }).click();
+
+      expect(mounted.onProviderModelChange).toHaveBeenCalledWith("codex", "gpt-5.3-codex", {
+        branchFromHistory: true,
+      });
     } finally {
       await mounted.cleanup();
     }

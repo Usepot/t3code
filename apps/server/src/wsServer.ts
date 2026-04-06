@@ -7,6 +7,7 @@
  * @module Server
  */
 import http from "node:http";
+import { appendFile } from "node:fs/promises";
 import type { Duplex } from "node:stream";
 
 import Mime from "@effect/platform-node/Mime";
@@ -56,11 +57,13 @@ import { ProjectionSnapshotQuery } from "./orchestration/Services/ProjectionSnap
 import { OrchestrationReactor } from "./orchestration/Services/OrchestrationReactor";
 import { ProviderService } from "./provider/Services/ProviderService";
 import { ProviderRegistry } from "./provider/Services/ProviderRegistry";
+import { CodexAdapter } from "./provider/Services/CodexAdapter";
 import { CheckpointDiffQuery } from "./checkpointing/Services/CheckpointDiffQuery";
 import { clamp } from "effect/Number";
 import { Open, resolveAvailableEditors } from "./open";
 import { ServerConfig } from "./config";
 import { GitCore } from "./git/Services/GitCore.ts";
+import { GitHubCli } from "./git/Services/GitHubCli.ts";
 import { tryHandleProjectFaviconRequest } from "./projectFaviconRoute";
 import {
   ATTACHMENTS_ROUTE_PREFIX,
@@ -209,7 +212,9 @@ export type ServerCoreRuntimeServices =
   | CheckpointDiffQuery
   | OrchestrationReactor
   | ProviderService
-  | ProviderRegistry;
+  | ProviderRegistry
+  | CodexAdapter
+  | GitHubCli;
 
 export type ServerRuntimeServices =
   | ServerCoreRuntimeServices
@@ -916,6 +921,29 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
         };
       }
 
+      case WS_METHODS.serverGetUsageLimits: {
+        const codexAdapter = yield* CodexAdapter;
+        const gitHubCli = yield* GitHubCli;
+        const [codex, github] = yield* Effect.all(
+          [
+            codexAdapter.getUsageLimits(),
+            gitHubCli.getUsageLimits({ cwd }).pipe(
+              Effect.catchCause((cause) =>
+                Effect.succeed({
+                  source: "github" as const,
+                  available: false,
+                  checkedAt: new Date().toISOString(),
+                  message: cause.toString(),
+                  buckets: [],
+                }),
+              ),
+            ),
+          ],
+          { concurrency: "unbounded" },
+        );
+        return { codex, github };
+      }
+
       case WS_METHODS.serverRefreshProviders: {
         const providers = yield* providerRegistry.refresh();
         yield* Ref.set(providersRef, providers);
@@ -935,6 +963,20 @@ export const createServer = Effect.fn(function* (): Effect.fn.Return<
       case WS_METHODS.serverUpdateSettings: {
         const body = stripRequestTag(request.body);
         return yield* serverSettingsManager.updateSettings(body.patch);
+      }
+
+      case WS_METHODS.serverLogToast: {
+        const body = stripRequestTag(request.body);
+        const toastLogPath = path.join(serverConfig.logsDir, "toasts.log");
+        const encodedEntry = `${JSON.stringify(body)}\n`;
+        yield* Effect.tryPromise({
+          try: () => appendFile(toastLogPath, encodedEntry, "utf8"),
+          catch: (cause) =>
+            new RouteRequestError({
+              message: `Failed to write toast log: ${String(cause)}`,
+            }),
+        });
+        return;
       }
 
       default: {

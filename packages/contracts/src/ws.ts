@@ -37,7 +37,11 @@ import {
 import { KeybindingRule } from "./keybindings";
 import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
 import { OpenInEditorInput } from "./editor";
-import { ServerConfigUpdatedPayload, ServerProviderUpdatedPayload } from "./server";
+import {
+  ServerConfigUpdatedPayload,
+  ServerLogToastInput,
+  ServerProviderUpdatedPayload,
+} from "./server";
 import { ServerSettingsPatch } from "./settings";
 
 // ── WebSocket RPC Method Names ───────────────────────────────────────
@@ -76,10 +80,12 @@ export const WS_METHODS = {
 
   // Server meta
   serverGetConfig: "server.getConfig",
+  serverGetUsageLimits: "server.getUsageLimits",
   serverRefreshProviders: "server.refreshProviders",
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverLogToast: "server.logToast",
 } as const;
 
 // ── Push Event Channels ──────────────────────────────────────────────
@@ -145,10 +151,12 @@ const WebSocketRequestBody = Schema.Union([
 
   // Server meta
   tagRequestBody(WS_METHODS.serverGetConfig, Schema.Struct({})),
+  tagRequestBody(WS_METHODS.serverGetUsageLimits, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverRefreshProviders, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverGetSettings, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, Schema.Struct({ patch: ServerSettingsPatch })),
+  tagRequestBody(WS_METHODS.serverLogToast, ServerLogToastInput),
 ]);
 
 export const WebSocketRequest = Schema.Struct({

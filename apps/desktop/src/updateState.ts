@@ -34,6 +34,7 @@ export function getAutoUpdateDisabledReason(args: {
   platform: NodeJS.Platform;
   appImage?: string | undefined;
   disabledByEnv: boolean;
+  hasUpdateConfig?: boolean;
 }): string | null {
   if (args.isDevelopment || !args.isPackaged) {
     return "Automatic updates are only available in packaged production builds.";
@@ -43,6 +44,9 @@ export function getAutoUpdateDisabledReason(args: {
   }
   if (args.platform === "linux" && !args.appImage) {
     return "Automatic updates on Linux require running the AppImage build.";
+  }
+  if (args.hasUpdateConfig === false) {
+    return "Automatic updates are unavailable (app-update.yml not found).";
   }
   return null;
 }

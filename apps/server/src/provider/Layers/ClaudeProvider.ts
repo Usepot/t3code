@@ -24,7 +24,9 @@ import {
 } from "../providerSnapshot";
 import { makeManagedServerProvider } from "../makeManagedServerProvider";
 import { ClaudeProvider } from "../Services/ClaudeProvider";
+import { SubscriptionManager } from "../Services/SubscriptionManager";
 import { ServerSettingsError, ServerSettingsService } from "../../serverSettings";
+import { SubscriptionManagerLive } from "./SubscriptionManagerLive";
 
 const PROVIDER = "claudeAgent" as const;
 const BUILT_IN_MODELS: ReadonlyArray<ServerProviderModel> = [
@@ -196,12 +198,20 @@ export function parseClaudeAuthStatusFromOutput(result: CommandResult): {
 const runClaudeCommand = (args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const subscriptionManager = yield* SubscriptionManager;
     const claudeSettings = yield* Effect.service(ServerSettingsService).pipe(
       Effect.flatMap((service) => service.getSettings),
       Effect.map((settings) => settings.providers.claudeAgent),
     );
+    const effectiveConfigPath = yield* subscriptionManager
+      .getEffectiveConfigPath("claudeAgent")
+      .pipe(Effect.orElseSucceed(() => undefined));
     const command = ChildProcess.make(claudeSettings.binaryPath, [...args], {
       shell: process.platform === "win32",
+      env: {
+        ...process.env,
+        ...(effectiveConfigPath ? { CLAUDE_CONFIG_DIR: effectiveConfigPath } : {}),
+      },
     });
 
     const child = yield* spawner.spawn(command);
@@ -221,7 +231,7 @@ export const checkClaudeProviderStatus = Effect.fn("checkClaudeProviderStatus")(
   function* (): Effect.fn.Return<
     ServerProvider,
     ServerSettingsError,
-    ChildProcessSpawner.ChildProcessSpawner | ServerSettingsService
+    ChildProcessSpawner.ChildProcessSpawner | ServerSettingsService | SubscriptionManager
   > {
     const claudeSettings = yield* Effect.service(ServerSettingsService).pipe(
       Effect.flatMap((service) => service.getSettings),
@@ -375,9 +385,11 @@ export const ClaudeProviderLive = Layer.effect(
   ClaudeProvider,
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
     const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
 
     const checkProvider = checkClaudeProviderStatus().pipe(
+      Effect.provideService(SubscriptionManager, subscriptionManager),
       Effect.provideService(ServerSettingsService, serverSettings),
       Effect.provideService(ChildProcessSpawner.ChildProcessSpawner, spawner),
     );
@@ -394,4 +406,4 @@ export const ClaudeProviderLive = Layer.effect(
       checkProvider,
     });
   }),
-);
+).pipe(Layer.provideMerge(SubscriptionManagerLive));

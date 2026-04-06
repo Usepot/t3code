@@ -183,6 +183,7 @@ import {
   SendPhase,
 } from "./ChatView.logic";
 import { useLocalStorage } from "~/hooks/useLocalStorage";
+import { buildContextPortPrompt } from "../threadContextTransfer";
 
 const ATTACHMENT_PREVIEW_HANDOFF_TTL_MS = 5000;
 const IMAGE_SIZE_LIMIT_LABEL = `${Math.round(PROVIDER_SEND_TURN_MAX_IMAGE_BYTES / (1024 * 1024))}MB`;
@@ -2859,6 +2860,79 @@ export default function ChatView({ threadId }: ChatViewProps) {
     setActivePendingUserInputQuestionIndex(Math.max(activePendingProgress.questionIndex - 1, 0));
   }, [activePendingProgress, setActivePendingUserInputQuestionIndex]);
 
+  const createThreadWithInitialTurn = useCallback(
+    async (input: {
+      threadId: ThreadId;
+      title: string;
+      modelSelection: ModelSelection;
+      runtimeMode: RuntimeMode;
+      interactionMode: ProviderInteractionMode;
+      branch: string | null;
+      worktreePath: string | null;
+      messageText: string;
+      createdAt: string;
+      sourceProposedPlan?: {
+        threadId: ThreadId;
+        planId: string;
+      };
+    }) => {
+      const api = readNativeApi();
+      if (!api || !activeProject) {
+        throw new Error("No active project is available.");
+      }
+
+      await api.orchestration.dispatchCommand({
+        type: "thread.create",
+        commandId: newCommandId(),
+        threadId: input.threadId,
+        projectId: activeProject.id,
+        title: input.title,
+        modelSelection: input.modelSelection,
+        runtimeMode: input.runtimeMode,
+        interactionMode: input.interactionMode,
+        branch: input.branch,
+        worktreePath: input.worktreePath,
+        createdAt: input.createdAt,
+      });
+
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.turn.start",
+          commandId: newCommandId(),
+          threadId: input.threadId,
+          message: {
+            messageId: newMessageId(),
+            role: "user",
+            text: input.messageText,
+            attachments: [],
+          },
+          modelSelection: input.modelSelection,
+          runtimeMode: input.runtimeMode,
+          interactionMode: input.interactionMode,
+          ...(input.sourceProposedPlan !== undefined
+            ? {
+                sourceProposedPlan: input.sourceProposedPlan,
+              }
+            : {}),
+          createdAt: input.createdAt,
+        });
+      } catch (error) {
+        await api.orchestration
+          .dispatchCommand({
+            type: "thread.delete",
+            commandId: newCommandId(),
+            threadId: input.threadId,
+          })
+          .catch(() => undefined);
+        throw error;
+      }
+
+      const snapshot = await api.orchestration.getSnapshot();
+      syncServerReadModel(snapshot);
+    },
+    [activeProject, syncServerReadModel],
+  );
+
   const onSubmitPlanFollowUp = useCallback(
     async ({
       text,
@@ -3024,40 +3098,21 @@ export default function ChatView({ threadId }: ChatViewProps) {
       resetSendPhase();
     };
 
-    await api.orchestration
-      .dispatchCommand({
-        type: "thread.create",
-        commandId: newCommandId(),
-        threadId: nextThreadId,
-        projectId: activeProject.id,
-        title: nextThreadTitle,
-        modelSelection: nextThreadModelSelection,
-        runtimeMode,
-        interactionMode: "default",
-        branch: activeThread.branch,
-        worktreePath: activeThread.worktreePath,
-        createdAt,
-      })
-      .then(() => {
-        return api.orchestration.dispatchCommand({
-          type: "thread.turn.start",
-          commandId: newCommandId(),
+    await Promise.resolve()
+      .then(() =>
+        createThreadWithInitialTurn({
           threadId: nextThreadId,
-          message: {
-            messageId: newMessageId(),
-            role: "user",
-            text: outgoingImplementationPrompt,
-            attachments: [],
-          },
-          modelSelection: selectedModelSelection,
+          title: nextThreadTitle,
+          modelSelection: nextThreadModelSelection,
           runtimeMode,
           interactionMode: "default",
+          branch: activeThread.branch,
+          worktreePath: activeThread.worktreePath,
+          messageText: outgoingImplementationPrompt,
           createdAt,
-        });
-      })
-      .then(() => api.orchestration.getSnapshot())
-      .then((snapshot) => {
-        syncServerReadModel(snapshot);
+        }),
+      )
+      .then(() => {
         // Signal that the plan sidebar should open on the new thread.
         planSidebarOpenOnNextThreadRef.current = true;
         return navigate({
@@ -3066,19 +3121,6 @@ export default function ChatView({ threadId }: ChatViewProps) {
         });
       })
       .catch(async (err) => {
-        await api.orchestration
-          .dispatchCommand({
-            type: "thread.delete",
-            commandId: newCommandId(),
-            threadId: nextThreadId,
-          })
-          .catch(() => undefined);
-        await api.orchestration
-          .getSnapshot()
-          .then((snapshot) => {
-            syncServerReadModel(snapshot);
-          })
-          .catch(() => undefined);
         toastManager.add({
           type: "error",
           title: "Could not start implementation thread",
@@ -3092,6 +3134,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
     activeProposedPlan,
     activeThread,
     beginSendPhase,
+    createThreadWithInitialTurn,
     isConnecting,
     isSendBusy,
     isServerThread,
@@ -3102,14 +3145,17 @@ export default function ChatView({ threadId }: ChatViewProps) {
     selectedModelSelection,
     selectedProvider,
     selectedProviderModels,
-    syncServerReadModel,
     selectedModel,
   ]);
 
   const onProviderModelSelect = useCallback(
-    (provider: ProviderKind, model: ModelSlug) => {
+    async (provider: ProviderKind, model: ModelSlug, options?: { branchFromHistory?: boolean }) => {
       if (!activeThread) return;
-      if (lockedProvider !== null && provider !== lockedProvider) {
+      if (
+        lockedProvider !== null &&
+        provider !== lockedProvider &&
+        options?.branchFromHistory !== true
+      ) {
         scheduleComposerFocus();
         return;
       }
@@ -3124,17 +3170,92 @@ export default function ChatView({ threadId }: ChatViewProps) {
         provider: resolvedProvider,
         model: resolvedModel,
       };
+      const shouldBranchFromHistory =
+        options?.branchFromHistory === true &&
+        isServerThread &&
+        activeThread.messages.length > 0 &&
+        (resolvedProvider !== activeThread.modelSelection.provider ||
+          resolvedModel !== activeThread.modelSelection.model);
+
+      if (shouldBranchFromHistory) {
+        if (isSendBusy || isConnecting || sendInFlightRef.current) {
+          toastManager.add({
+            type: "error",
+            title: "Could not switch models",
+            description: "Wait for the current send to finish before branching to a new model.",
+          });
+          scheduleComposerFocus();
+          return;
+        }
+
+        const nextThreadId = newThreadId();
+        const createdAt = new Date().toISOString();
+        const nextModelLabel =
+          modelOptionsByProvider[resolvedProvider].find((option) => option.slug === resolvedModel)
+            ?.name ?? resolvedModel;
+        const nextThreadTitle = truncateTitle(`${activeThread.title} (${nextModelLabel})`);
+        const bootstrapPrompt = buildContextPortPrompt({
+          thread: activeThread,
+          targetModelName: nextModelLabel,
+        });
+
+        sendInFlightRef.current = true;
+        beginSendPhase("sending-turn");
+        try {
+          await createThreadWithInitialTurn({
+            threadId: nextThreadId,
+            title: nextThreadTitle,
+            modelSelection: nextModelSelection,
+            runtimeMode,
+            interactionMode,
+            branch: activeThread.branch,
+            worktreePath: activeThread.worktreePath,
+            messageText: bootstrapPrompt,
+            createdAt,
+          });
+          setComposerDraftModelSelection(nextThreadId, nextModelSelection);
+          setStickyComposerModelSelection(nextModelSelection);
+          await navigate({
+            to: "/$threadId",
+            params: { threadId: nextThreadId },
+          });
+        } catch (error) {
+          toastManager.add({
+            type: "error",
+            title: "Could not switch models",
+            description:
+              error instanceof Error
+                ? error.message
+                : "An error occurred while creating the new model session.",
+          });
+        } finally {
+          sendInFlightRef.current = false;
+          resetSendPhase();
+        }
+        return;
+      }
+
       setComposerDraftModelSelection(activeThread.id, nextModelSelection);
       setStickyComposerModelSelection(nextModelSelection);
       scheduleComposerFocus();
     },
     [
       activeThread,
+      beginSendPhase,
+      createThreadWithInitialTurn,
+      interactionMode,
+      isConnecting,
+      isSendBusy,
+      isServerThread,
       lockedProvider,
+      modelOptionsByProvider,
+      navigate,
+      providerStatuses,
+      resetSendPhase,
+      runtimeMode,
       scheduleComposerFocus,
       setComposerDraftModelSelection,
       setStickyComposerModelSelection,
-      providerStatuses,
       settings,
     ],
   );
@@ -3808,6 +3929,7 @@ export default function ChatView({ threadId }: ChatViewProps) {
                           provider={selectedProvider}
                           model={selectedModelForPickerWithCustomFallback}
                           lockedProvider={lockedProvider}
+                          canBranchFromHistory={activeThread.messages.length > 0}
                           providers={providerStatuses}
                           modelOptionsByProvider={modelOptionsByProvider}
                           {...(composerProviderState.modelPickerIconClassName

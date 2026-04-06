@@ -16,7 +16,9 @@ import {
 } from "../providerSnapshot";
 import { makeManagedServerProvider } from "../makeManagedServerProvider";
 import { CopilotProvider } from "../Services/CopilotProvider";
+import { SubscriptionManager } from "../Services/SubscriptionManager";
 import { ServerSettingsError, ServerSettingsService } from "../../serverSettings";
+import { SubscriptionManagerLive } from "./SubscriptionManagerLive";
 import { resolveCopilotRuntimeConfig } from "./copilotSdk";
 
 const PROVIDER = "copilot" as const;
@@ -64,12 +66,16 @@ export const makeCheckCopilotProviderStatus = (options?: CheckCopilotProviderSta
   Effect.fn("checkCopilotProviderStatus")(function* (): Effect.fn.Return<
     ServerProvider,
     ServerSettingsError,
-    ServerSettingsService
+    ServerSettingsService | SubscriptionManager
   > {
     const copilotSettings = yield* Effect.service(ServerSettingsService).pipe(
       Effect.flatMap((service) => service.getSettings),
       Effect.map((settings) => settings.providers.copilot),
     );
+    const subscriptionManager = yield* SubscriptionManager;
+    const effectiveConfigPath = yield* subscriptionManager
+      .getEffectiveConfigPath("copilot")
+      .pipe(Effect.orElseSucceed(() => copilotSettings.configDir || undefined));
     const checkedAt = new Date().toISOString();
     const models = providerModelsFromSettings(
       COPILOT_BUILT_IN_MODELS,
@@ -93,7 +99,13 @@ export const makeCheckCopilotProviderStatus = (options?: CheckCopilotProviderSta
       });
     }
 
-    const { clientOptions } = resolveCopilotRuntimeConfig(copilotSettings, undefined);
+    const { clientOptions } = resolveCopilotRuntimeConfig(
+      {
+        ...copilotSettings,
+        configDir: effectiveConfigPath ?? "",
+      },
+      undefined,
+    );
     const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const probe = yield* Effect.result(
       Effect.tryPromise({
@@ -207,8 +219,10 @@ export const CopilotProviderLive = Layer.effect(
   CopilotProvider,
   Effect.gen(function* () {
     const serverSettings = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
 
     const checkProvider = checkCopilotProviderStatus().pipe(
+      Effect.provideService(SubscriptionManager, subscriptionManager),
       Effect.provideService(ServerSettingsService, serverSettings),
     );
 
@@ -224,4 +238,4 @@ export const CopilotProviderLive = Layer.effect(
       checkProvider,
     });
   }),
-);
+).pipe(Layer.provideMerge(SubscriptionManagerLive));

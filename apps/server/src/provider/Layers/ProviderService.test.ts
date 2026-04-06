@@ -33,6 +33,7 @@ import type { ProviderAdapterShape } from "../Services/ProviderAdapter.ts";
 import { ProviderAdapterRegistry } from "../Services/ProviderAdapterRegistry.ts";
 import { ProviderService } from "../Services/ProviderService.ts";
 import { ProviderSessionDirectory } from "../Services/ProviderSessionDirectory.ts";
+import { SubscriptionManager } from "../Services/SubscriptionManager.ts";
 import { makeProviderServiceLive } from "./ProviderService.ts";
 import { ProviderSessionDirectoryLive } from "./ProviderSessionDirectory.ts";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -46,6 +47,7 @@ import { ServerSettingsService } from "../../serverSettings.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 
 const defaultServerSettingsLayer = ServerSettingsService.layerTest();
+const defaultSubscriptionManagerLayer = SubscriptionManager.layerTest();
 
 const asRequestId = (value: string): ApprovalRequestId => ApprovalRequestId.makeUnsafe(value);
 const asEventId = (value: string): EventId => EventId.makeUnsafe(value);
@@ -255,6 +257,7 @@ function makeProviderServiceLayer() {
         Layer.provide(providerAdapterLayer),
         Layer.provide(directoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(defaultSubscriptionManagerLayer),
         Layer.provideMerge(AnalyticsService.layerTest),
       ),
       directoryLayer,
@@ -300,6 +303,7 @@ it.effect("ProviderServiceLive rejects new sessions for disabled providers", () 
       Layer.provide(providerAdapterLayer),
       Layer.provide(directoryLayer),
       Layer.provide(serverSettingsLayer),
+      Layer.provide(defaultSubscriptionManagerLayer),
       Layer.provide(AnalyticsService.layerTest),
     );
 
@@ -353,6 +357,7 @@ it.effect("ProviderServiceLive keeps persisted resumable sessions on startup", (
       Layer.provide(Layer.succeed(ProviderAdapterRegistry, registry)),
       Layer.provide(directoryLayer),
       Layer.provide(defaultServerSettingsLayer),
+      Layer.provide(defaultSubscriptionManagerLayer),
       Layer.provide(AnalyticsService.layerTest),
     );
 
@@ -413,6 +418,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(defaultSubscriptionManagerLayer),
         Layer.provide(AnalyticsService.layerTest),
       );
       const updatedResumeCursor = {
@@ -465,6 +471,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(defaultSubscriptionManagerLayer),
         Layer.provide(AnalyticsService.layerTest),
       );
 
@@ -826,6 +833,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(defaultSubscriptionManagerLayer),
         Layer.provide(AnalyticsService.layerTest),
       );
 
@@ -859,6 +867,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(defaultServerSettingsLayer),
+        Layer.provide(defaultSubscriptionManagerLayer),
         Layer.provide(AnalyticsService.layerTest),
       );
 

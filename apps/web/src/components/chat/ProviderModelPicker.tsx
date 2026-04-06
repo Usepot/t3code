@@ -1,9 +1,9 @@
 import { type ModelSlug, type ProviderKind, type ServerProvider } from "@t3tools/contracts";
 import { resolveSelectableModel } from "@t3tools/shared/model";
-import { memo, useState } from "react";
+import { memo, useEffect, useState } from "react";
 import type { VariantProps } from "class-variance-authority";
 import { type ProviderPickerKind, PROVIDER_OPTIONS } from "../../session-logic";
-import { ChevronDownIcon } from "lucide-react";
+import { ChevronDownIcon, ChevronLeftIcon } from "lucide-react";
 import { Button, buttonVariants } from "../ui/button";
 import {
   Menu,
@@ -66,18 +66,30 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
   modelOptionsByProvider: Record<ProviderKind, ReadonlyArray<{ slug: string; name: string }>>;
   activeProviderIconClassName?: string;
   compact?: boolean;
+  canBranchFromHistory?: boolean;
   disabled?: boolean;
   triggerVariant?: VariantProps<typeof buttonVariants>["variant"];
   triggerClassName?: string;
-  onProviderModelChange: (provider: ProviderKind, model: ModelSlug) => void;
+  onProviderModelChange: (
+    provider: ProviderKind,
+    model: ModelSlug,
+    options?: { branchFromHistory?: boolean },
+  ) => void;
 }) {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [isBranchSelectionMode, setIsBranchSelectionMode] = useState(false);
   const activeProvider = props.lockedProvider ?? props.provider;
   const allowedProviders = props.allowedProviders ?? ["codex", "claudeAgent", "copilot"];
   const selectedProviderOptions = props.modelOptionsByProvider[activeProvider];
   const selectedModelLabel =
     selectedProviderOptions.find((option) => option.slug === props.model)?.name ?? props.model;
   const ProviderIcon = PROVIDER_ICON_BY_PROVIDER[activeProvider];
+  useEffect(() => {
+    if (!isMenuOpen) {
+      setIsBranchSelectionMode(false);
+    }
+  }, [isMenuOpen]);
+
   const handleModelChange = (provider: ProviderKind, value: string) => {
     if (props.disabled) return;
     if (!value) return;
@@ -87,7 +99,9 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
       props.modelOptionsByProvider[provider],
     );
     if (!resolvedModel) return;
-    props.onProviderModelChange(provider, resolvedModel);
+    props.onProviderModelChange(provider, resolvedModel, {
+      branchFromHistory: isBranchSelectionMode,
+    });
     setIsMenuOpen(false);
   };
 
@@ -135,8 +149,22 @@ export const ProviderModelPicker = memo(function ProviderModelPicker(props: {
         </span>
       </MenuTrigger>
       <MenuPopup align="start">
-        {props.lockedProvider !== null ? (
+        {props.lockedProvider !== null && !isBranchSelectionMode ? (
           <MenuGroup>
+            {props.canBranchFromHistory ? (
+              <>
+                <MenuItem
+                  closeOnClick={false}
+                  onClick={() => {
+                    setIsBranchSelectionMode(true);
+                  }}
+                >
+                  <ChevronLeftIcon aria-hidden="true" className="size-4 shrink-0" />
+                  <span>Back</span>
+                </MenuItem>
+                <MenuDivider />
+              </>
+            ) : null}
             <MenuRadioGroup
               value={props.model}
               onValueChange={(value) => handleModelChange(props.lockedProvider!, value)}

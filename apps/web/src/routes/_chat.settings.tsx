@@ -14,8 +14,11 @@ import { type ReactNode, useCallback, useEffect, useRef, useState } from "react"
 import {
   PROVIDER_DISPLAY_NAMES,
   type ProviderKind,
+  type ProviderSubscription,
   type ServerProvider,
   type ServerProviderModel,
+  type ServerUsageLimitBucket,
+  type ServerUsageLimitsSnapshot,
 } from "@t3tools/contracts";
 import { buildModelSelection, normalizeModelSlug } from "@t3tools/shared/model";
 import { useSettings, useUpdateSettings } from "../hooks/useSettings";
@@ -44,7 +47,11 @@ import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip"
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
-import { serverConfigQueryOptions, serverQueryKeys } from "../lib/serverReactQuery";
+import {
+  serverConfigQueryOptions,
+  serverQueryKeys,
+  serverUsageLimitsQueryOptions,
+} from "../lib/serverReactQuery";
 import { cn } from "../lib/utils";
 import { formatRelativeTime } from "../timestampFormat";
 import { ensureNativeApi, readNativeApi } from "../nativeApi";
@@ -201,6 +208,64 @@ function getProviderVersionLabel(version: string | null | undefined): string | n
   return version.startsWith("v") ? version : `v${version}`;
 }
 
+function formatUsageBucketHeadline(bucket: ServerUsageLimitBucket): string {
+  if (bucket.used !== undefined && bucket.limit !== undefined && bucket.remaining !== undefined) {
+    return `${bucket.used}/${bucket.limit} used, ${bucket.remaining} remaining`;
+  }
+  if (bucket.used !== undefined && bucket.limit !== undefined) {
+    return `${bucket.used}/${bucket.limit} used`;
+  }
+  if (bucket.usedPercent !== undefined) {
+    return `${Math.round(bucket.usedPercent)}% used`;
+  }
+  return "Usage data available";
+}
+
+function formatUsageBucketDetail(bucket: ServerUsageLimitBucket): string | null {
+  const parts: string[] = [];
+  if (bucket.resetsAt) {
+    parts.push(`Resets ${new Date(bucket.resetsAt).toLocaleString()}`);
+  }
+  if (bucket.windowDurationMins !== undefined) {
+    parts.push(`${bucket.windowDurationMins} minute window`);
+  }
+  return parts.length > 0 ? parts.join(" | ") : null;
+}
+
+function getUsageSnapshotSummary(snapshot: ServerUsageLimitsSnapshot): {
+  readonly headline: string;
+  readonly detail: string | null;
+} {
+  if (!snapshot.available) {
+    return {
+      headline: "Unavailable",
+      detail: snapshot.message ?? "No usage-limit data is available right now.",
+    };
+  }
+
+  if (snapshot.buckets.length === 0) {
+    return {
+      headline: "No buckets reported",
+      detail: snapshot.message ?? null,
+    };
+  }
+
+  const highestUsageBucket = snapshot.buckets.toSorted(
+    (left, right) => (right.usedPercent ?? -1) - (left.usedPercent ?? -1),
+  )[0];
+  if (!highestUsageBucket) {
+    return {
+      headline: "Available",
+      detail: snapshot.message ?? null,
+    };
+  }
+
+  return {
+    headline: highestUsageBucket.label,
+    detail: formatUsageBucketHeadline(highestUsageBucket),
+  };
+}
+
 /** Returns a timestamp that updates on an interval, forcing re-renders to keep relative times fresh. */
 function useRelativeTimeTick(intervalMs = 1_000): number {
   const [tick, setTick] = useState(() => Date.now());
@@ -277,6 +342,25 @@ function SettingsRow({
   );
 }
 
+function makeSubscriptionId(provider: ProviderKind, name: string, index: number): string {
+  const normalized = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return `${provider}-${normalized || `account-${index + 1}`}-${Date.now().toString(36)}`;
+}
+
+function makeDefaultSubscription(provider: ProviderKind, index: number): ProviderSubscription {
+  return {
+    id: makeSubscriptionId(provider, "", index),
+    name: `Account ${index + 1}`,
+    configPath: "",
+    priority: index,
+    isActive: false,
+  };
+}
+
 function SettingResetButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <Tooltip>
@@ -306,25 +390,29 @@ function SettingsRouteView() {
   const settings = useSettings();
   const { updateSettings, resetSettings } = useUpdateSettings();
   const serverConfigQuery = useQuery(serverConfigQueryOptions());
+  const serverUsageLimitsQuery = useQuery(serverUsageLimitsQueryOptions());
   const [isOpeningKeybindings, setIsOpeningKeybindings] = useState(false);
   const [openKeybindingsError, setOpenKeybindingsError] = useState<string | null>(null);
   const [openProviderDetails, setOpenProviderDetails] = useState<Record<ProviderKind, boolean>>({
     codex: Boolean(
       settings.providers.codex.binaryPath !== DEFAULT_UNIFIED_SETTINGS.providers.codex.binaryPath ||
       settings.providers.codex.homePath !== DEFAULT_UNIFIED_SETTINGS.providers.codex.homePath ||
-      settings.providers.codex.customModels.length > 0,
+      settings.providers.codex.customModels.length > 0 ||
+      settings.providers.codex.subscriptions.length > 0,
     ),
     claudeAgent: Boolean(
       settings.providers.claudeAgent.binaryPath !==
         DEFAULT_UNIFIED_SETTINGS.providers.claudeAgent.binaryPath ||
-      settings.providers.claudeAgent.customModels.length > 0,
+      settings.providers.claudeAgent.customModels.length > 0 ||
+      settings.providers.claudeAgent.subscriptions.length > 0,
     ),
     copilot: Boolean(
       settings.providers.copilot.binaryPath !==
         DEFAULT_UNIFIED_SETTINGS.providers.copilot.binaryPath ||
       settings.providers.copilot.configDir !==
         DEFAULT_UNIFIED_SETTINGS.providers.copilot.configDir ||
-      settings.providers.copilot.customModels.length > 0,
+      settings.providers.copilot.customModels.length > 0 ||
+      settings.providers.copilot.subscriptions.length > 0,
     ),
   });
   const [customModelInputByProvider, setCustomModelInputByProvider] = useState<
@@ -338,7 +426,9 @@ function SettingsRouteView() {
     Partial<Record<ProviderKind, string | null>>
   >({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
+  const [isRefreshingUsageLimits, setIsRefreshingUsageLimits] = useState(false);
   const refreshingRef = useRef(false);
+  const refreshingUsageLimitsRef = useRef(false);
   const queryClient = useQueryClient();
   useRelativeTimeTick();
 
@@ -359,11 +449,31 @@ function SettingsRouteView() {
       });
   }, [queryClient]);
 
+  const refreshUsageLimits = useCallback(() => {
+    if (refreshingUsageLimitsRef.current) return;
+    refreshingUsageLimitsRef.current = true;
+    setIsRefreshingUsageLimits(true);
+    const api = ensureNativeApi();
+    api.server
+      .getUsageLimits()
+      .then((usageLimits) => {
+        queryClient.setQueryData(serverQueryKeys.usageLimits(), usageLimits);
+      })
+      .catch((error: unknown) => {
+        console.warn("Failed to refresh usage limits", error);
+      })
+      .finally(() => {
+        refreshingUsageLimitsRef.current = false;
+        setIsRefreshingUsageLimits(false);
+      });
+  }, [queryClient]);
+
   const modelListRefs = useRef<Partial<Record<ProviderKind, HTMLDivElement | null>>>({});
 
   const keybindingsConfigPath = serverConfigQuery.data?.keybindingsConfigPath ?? null;
   const availableEditors = serverConfigQuery.data?.availableEditors;
   const serverProviders = serverConfigQuery.data?.providers ?? EMPTY_SERVER_PROVIDERS;
+  const usageLimits = serverUsageLimitsQuery.data;
 
   const textGenerationModelSelection = resolveAppModelSelectionState(settings, serverProviders);
   const textGenProvider = textGenerationModelSelection.provider;
@@ -520,6 +630,65 @@ function SettingsRouteView() {
       }));
     },
     [settings, updateSettings],
+  );
+
+  const updateProviderSubscriptions = useCallback(
+    (provider: ProviderKind, subscriptions: ReadonlyArray<ProviderSubscription>) => {
+      updateSettings({
+        providers: {
+          ...settings.providers,
+          [provider]: {
+            ...settings.providers[provider],
+            subscriptions: [...subscriptions],
+          },
+        },
+      });
+    },
+    [settings, updateSettings],
+  );
+
+  const addSubscription = useCallback(
+    (provider: ProviderKind) => {
+      const subscriptions = settings.providers[provider].subscriptions;
+      updateProviderSubscriptions(provider, [
+        ...subscriptions,
+        makeDefaultSubscription(provider, subscriptions.length),
+      ]);
+      setOpenProviderDetails((existing) => ({
+        ...existing,
+        [provider]: true,
+      }));
+    },
+    [settings, updateProviderSubscriptions],
+  );
+
+  const updateSubscription = useCallback(
+    (
+      provider: ProviderKind,
+      subscriptionId: string,
+      patch: Partial<Pick<ProviderSubscription, "name" | "configPath" | "priority">>,
+    ) => {
+      const subscriptions = settings.providers[provider].subscriptions.map((subscription) =>
+        subscription.id !== subscriptionId
+          ? subscription
+          : {
+              ...subscription,
+              ...patch,
+            },
+      );
+      updateProviderSubscriptions(provider, subscriptions);
+    },
+    [settings, updateProviderSubscriptions],
+  );
+
+  const removeSubscription = useCallback(
+    (provider: ProviderKind, subscriptionId: string) => {
+      const subscriptions = settings.providers[provider].subscriptions
+        .filter((subscription) => subscription.id !== subscriptionId)
+        .map((subscription, index) => Object.assign({}, subscription, { priority: index }));
+      updateProviderSubscriptions(provider, subscriptions);
+    },
+    [settings, updateProviderSubscriptions],
   );
 
   const providerCards = PROVIDER_SETTINGS.map((providerSettings) => {
@@ -1176,6 +1345,148 @@ function SettingsRouteView() {
                             </div>
                           ) : null}
 
+                          <div className="border-t border-border/60 px-4 py-3 sm:px-5">
+                            <div className="flex items-start justify-between gap-3">
+                              <div>
+                                <div className="text-xs font-medium text-foreground">
+                                  Subscriptions
+                                </div>
+                                <div className="mt-1 text-xs text-muted-foreground">
+                                  Configure multiple authenticated config directories so T3 Code can
+                                  switch accounts automatically when this provider reports a rate
+                                  limit.
+                                </div>
+                              </div>
+                              <Button
+                                size="xs"
+                                variant="outline"
+                                className="shrink-0"
+                                onClick={() => addSubscription(providerCard.provider)}
+                              >
+                                <PlusIcon className="size-3.5" />
+                                Add
+                              </Button>
+                            </div>
+
+                            <div className="mt-3 space-y-3">
+                              {providerCard.providerConfig.subscriptions.length === 0 ? (
+                                <div className="rounded-xl border border-dashed border-border/70 bg-background/60 px-3 py-3 text-xs text-muted-foreground">
+                                  No subscriptions configured. T3 Code will keep using the legacy
+                                  single-account path for this provider.
+                                </div>
+                              ) : (
+                                providerCard.providerConfig.subscriptions.map(
+                                  (subscription, index) => (
+                                    <div
+                                      key={subscription.id}
+                                      className="rounded-xl border border-border/70 bg-background/60 p-3"
+                                    >
+                                      <div className="flex items-center justify-between gap-3">
+                                        <div className="min-w-0">
+                                          <div className="text-xs font-medium text-foreground">
+                                            Subscription {index + 1}
+                                          </div>
+                                          <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+                                            {subscription.id}
+                                          </div>
+                                        </div>
+                                        <button
+                                          type="button"
+                                          className="text-muted-foreground transition-colors hover:text-foreground"
+                                          aria-label={`Remove ${subscription.name || `subscription ${index + 1}`}`}
+                                          onClick={() =>
+                                            removeSubscription(
+                                              providerCard.provider,
+                                              subscription.id,
+                                            )
+                                          }
+                                        >
+                                          <XIcon className="size-3.5" />
+                                        </button>
+                                      </div>
+
+                                      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                                        <label className="block">
+                                          <span className="text-[11px] font-medium text-foreground">
+                                            Name
+                                          </span>
+                                          <Input
+                                            className="mt-1.5"
+                                            value={subscription.name}
+                                            onChange={(event) =>
+                                              updateSubscription(
+                                                providerCard.provider,
+                                                subscription.id,
+                                                { name: event.target.value },
+                                              )
+                                            }
+                                            placeholder="Personal"
+                                            spellCheck={false}
+                                          />
+                                        </label>
+
+                                        <label className="block">
+                                          <span className="text-[11px] font-medium text-foreground">
+                                            Priority
+                                          </span>
+                                          <Input
+                                            className="mt-1.5"
+                                            type="number"
+                                            min="0"
+                                            step="1"
+                                            value={String(subscription.priority)}
+                                            onChange={(event) =>
+                                              updateSubscription(
+                                                providerCard.provider,
+                                                subscription.id,
+                                                {
+                                                  priority: Math.max(
+                                                    0,
+                                                    Number.parseInt(
+                                                      event.target.value || "0",
+                                                      10,
+                                                    ) || 0,
+                                                  ),
+                                                },
+                                              )
+                                            }
+                                          />
+                                        </label>
+                                      </div>
+
+                                      <label className="mt-3 block">
+                                        <span className="text-[11px] font-medium text-foreground">
+                                          {providerCard.provider === "codex"
+                                            ? "Config path / CODEX_HOME"
+                                            : "Config path"}
+                                        </span>
+                                        <Input
+                                          className="mt-1.5"
+                                          value={subscription.configPath}
+                                          onChange={(event) =>
+                                            updateSubscription(
+                                              providerCard.provider,
+                                              subscription.id,
+                                              { configPath: event.target.value },
+                                            )
+                                          }
+                                          placeholder={
+                                            providerCard.provider === "codex"
+                                              ? "~/.codex-work"
+                                              : providerCard.provider === "claudeAgent"
+                                                ? "~/.claude-work"
+                                                : "~/.config/github-copilot-work"
+                                          }
+                                          spellCheck={false}
+                                        />
+                                      </label>
+                                    </div>
+                                  ),
+                                )
+                              )}
+                            </div>
+                          </div>
+
                           {/* Models */}
                           <div className="border-t border-border/60 px-4 py-3 sm:px-5">
                             <div className="text-xs font-medium text-foreground">Models</div>
@@ -1313,6 +1624,99 @@ function SettingsRouteView() {
                       </CollapsibleContent>
                     </Collapsible>
                   </div>
+                );
+              })}
+            </SettingsSection>
+
+            <SettingsSection
+              title="Account Limits"
+              headerAction={
+                <Tooltip>
+                  <TooltipTrigger
+                    render={
+                      <Button
+                        size="icon-xs"
+                        variant="ghost"
+                        className="size-5 rounded-sm p-0 text-muted-foreground hover:text-foreground"
+                        disabled={isRefreshingUsageLimits}
+                        onClick={() => void refreshUsageLimits()}
+                        aria-label="Refresh account limits"
+                      >
+                        {isRefreshingUsageLimits ? (
+                          <LoaderIcon className="size-3 animate-spin" />
+                        ) : (
+                          <RefreshCwIcon className="size-3" />
+                        )}
+                      </Button>
+                    }
+                  />
+                  <TooltipPopup side="top">Refresh account limits</TooltipPopup>
+                </Tooltip>
+              }
+            >
+              {[
+                {
+                  key: "codex" as const,
+                  title: "Codex",
+                  description:
+                    "Live Codex app-server rate limits. These become available after a Codex session starts.",
+                  snapshot: usageLimits?.codex,
+                },
+                {
+                  key: "github" as const,
+                  title: "GitHub",
+                  description:
+                    "GitHub API rate-limit windows from `gh api rate_limit`. This is API rate-limit state, not billing usage.",
+                  snapshot: usageLimits?.github,
+                },
+              ].map(({ key, title, description, snapshot }) => {
+                const summary = snapshot
+                  ? getUsageSnapshotSummary(snapshot)
+                  : {
+                      headline: "Loading",
+                      detail: "Requesting the latest usage-limit snapshot from the server.",
+                    };
+
+                return (
+                  <SettingsRow
+                    key={key}
+                    title={title}
+                    description={description}
+                    status={
+                      <div className="space-y-2">
+                        <div>
+                          <span className="font-medium text-foreground">{summary.headline}</span>
+                          {summary.detail ? <span>{` | ${summary.detail}`}</span> : null}
+                        </div>
+                        {snapshot?.available && snapshot.buckets.length ? (
+                          <div className="space-y-1.5">
+                            {snapshot.buckets.map((bucket) => (
+                              <div
+                                key={`${key}:${bucket.id}`}
+                                className="rounded-md border border-border/70 bg-background/60 px-2.5 py-2"
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className="font-medium text-foreground">
+                                    {bucket.label}
+                                  </span>
+                                  <span className="font-mono text-[11px] text-foreground/90">
+                                    {formatUsageBucketHeadline(bucket)}
+                                  </span>
+                                </div>
+                                {formatUsageBucketDetail(bucket) ? (
+                                  <div className="mt-1 text-[11px] text-muted-foreground">
+                                    {formatUsageBucketDetail(bucket)}
+                                  </div>
+                                ) : null}
+                              </div>
+                            ))}
+                          </div>
+                        ) : snapshot?.message ? (
+                          <div>{snapshot.message}</div>
+                        ) : null}
+                      </div>
+                    }
+                  />
                 );
               })}
             </SettingsSection>

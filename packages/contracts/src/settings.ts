@@ -44,6 +44,31 @@ export const DEFAULT_CLIENT_SETTINGS: ClientSettings = Schema.decodeSync(ClientS
 export const ThreadEnvMode = Schema.Literals(["local", "worktree"]);
 export type ThreadEnvMode = typeof ThreadEnvMode.Type;
 
+// ── Provider Subscriptions ────────────────────────────────────
+
+/**
+ * A subscription represents an authenticated account for a provider.
+ * Multiple subscriptions allow automatic failover when rate limits are hit.
+ */
+export const ProviderSubscription = Schema.Struct({
+  /** Unique identifier for this subscription (e.g., "work-account", "personal") */
+  id: TrimmedNonEmptyString,
+  /** Human-readable display name */
+  name: TrimmedNonEmptyString,
+  /** Path to config directory containing auth tokens for this subscription */
+  configPath: TrimmedNonEmptyString,
+  /** Priority order (0 = highest priority, used first) */
+  priority: Schema.Number.pipe(Schema.withDecodingDefault(() => 0)),
+  /** Unix timestamp (ms) when rate limit expires, undefined if not rate-limited */
+  rateLimitedUntil: Schema.optional(Schema.Number),
+  /** Whether this subscription is currently active */
+  isActive: Schema.Boolean.pipe(Schema.withDecodingDefault(() => false)),
+});
+export type ProviderSubscription = typeof ProviderSubscription.Type;
+
+/** Default rate limit cooldown period in milliseconds (60 seconds) */
+export const DEFAULT_RATE_LIMIT_COOLDOWN_MS = 60_000;
+
 const makeBinaryPathSetting = (fallback: string) =>
   TrimmedString.pipe(
     Schema.decodeTo(
@@ -61,6 +86,8 @@ export const CodexSettings = Schema.Struct({
   binaryPath: makeBinaryPathSetting("codex"),
   homePath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  /** Multiple subscriptions for automatic rate limit failover */
+  subscriptions: Schema.Array(ProviderSubscription).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type CodexSettings = typeof CodexSettings.Type;
 
@@ -68,6 +95,8 @@ export const ClaudeSettings = Schema.Struct({
   enabled: Schema.Boolean.pipe(Schema.withDecodingDefault(() => true)),
   binaryPath: makeBinaryPathSetting("claude"),
   customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  /** Multiple subscriptions for automatic rate limit failover */
+  subscriptions: Schema.Array(ProviderSubscription).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type ClaudeSettings = typeof ClaudeSettings.Type;
 
@@ -76,6 +105,8 @@ export const CopilotSettings = Schema.Struct({
   binaryPath: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   configDir: TrimmedString.pipe(Schema.withDecodingDefault(() => "")),
   customModels: Schema.Array(Schema.String).pipe(Schema.withDecodingDefault(() => [])),
+  /** Multiple subscriptions for automatic rate limit failover */
+  subscriptions: Schema.Array(ProviderSubscription).pipe(Schema.withDecodingDefault(() => [])),
 });
 export type CopilotSettings = typeof CopilotSettings.Type;
 
@@ -145,17 +176,28 @@ const ModelSelectionPatch = Schema.Union([
   }),
 ]);
 
+const ProviderSubscriptionPatch = Schema.Struct({
+  id: Schema.optionalKey(TrimmedNonEmptyString),
+  name: Schema.optionalKey(TrimmedNonEmptyString),
+  configPath: Schema.optionalKey(TrimmedNonEmptyString),
+  priority: Schema.optionalKey(Schema.Number),
+  rateLimitedUntil: Schema.optionalKey(Schema.Number),
+  isActive: Schema.optionalKey(Schema.Boolean),
+});
+
 const CodexSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   homePath: Schema.optionalKey(Schema.String),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  subscriptions: Schema.optionalKey(Schema.Array(ProviderSubscriptionPatch)),
 });
 
 const ClaudeSettingsPatch = Schema.Struct({
   enabled: Schema.optionalKey(Schema.Boolean),
   binaryPath: Schema.optionalKey(Schema.String),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  subscriptions: Schema.optionalKey(Schema.Array(ProviderSubscriptionPatch)),
 });
 
 const CopilotSettingsPatch = Schema.Struct({
@@ -163,6 +205,7 @@ const CopilotSettingsPatch = Schema.Struct({
   binaryPath: Schema.optionalKey(Schema.String),
   configDir: Schema.optionalKey(Schema.String),
   customModels: Schema.optionalKey(Schema.Array(Schema.String)),
+  subscriptions: Schema.optionalKey(Schema.Array(ProviderSubscriptionPatch)),
 });
 
 export const ServerSettingsPatch = Schema.Struct({

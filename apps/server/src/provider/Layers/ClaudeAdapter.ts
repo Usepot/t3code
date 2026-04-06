@@ -69,6 +69,7 @@ import {
   type ProviderAdapterError,
 } from "../Errors.ts";
 import { ClaudeAdapter, type ClaudeAdapterShape } from "../Services/ClaudeAdapter.ts";
+import { SubscriptionManager } from "../Services/SubscriptionManager.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "claudeAgent" as const;
@@ -928,6 +929,7 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
     const sessions = new Map<ThreadId, ClaudeSessionContext>();
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const serverSettingsService = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
 
     const nowIso = Effect.map(DateTime.now, DateTime.formatIso);
     const nextEventId = Effect.map(Random.nextUUIDv4, (id) => EventId.makeUnsafe(id));
@@ -2725,6 +2727,9 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ),
         );
         const claudeBinaryPath = claudeSettings.binaryPath;
+        const effectiveConfigPath = yield* subscriptionManager
+          .getEffectiveConfigPath(PROVIDER)
+          .pipe(Effect.orElseSucceed(() => undefined));
         const modelSelection =
           input.modelSelection?.provider === "claudeAgent" ? input.modelSelection : undefined;
         const requestedEffort = trimOrNull(modelSelection?.options?.effort ?? null);
@@ -2759,7 +2764,10 @@ function makeClaudeAdapter(options?: ClaudeAdapterLiveOptions) {
           ...(newSessionId ? { sessionId: newSessionId } : {}),
           includePartialMessages: true,
           canUseTool,
-          env: process.env,
+          env: {
+            ...process.env,
+            ...(effectiveConfigPath ? { CLAUDE_CONFIG_DIR: effectiveConfigPath } : {}),
+          },
           ...(input.cwd ? { additionalDirectories: [input.cwd] } : {}),
         };
 

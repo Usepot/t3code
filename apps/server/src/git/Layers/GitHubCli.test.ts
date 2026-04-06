@@ -125,4 +125,50 @@ layer("GitHubCliLive", (it) => {
       assert.equal(error.message.includes("Pull request not found"), true);
     }),
   );
+
+  it.effect("reads GitHub API rate limits", () =>
+    Effect.gen(function* () {
+      mockedRunProcess.mockResolvedValueOnce({
+        stdout: JSON.stringify({
+          resources: {
+            core: {
+              limit: 5000,
+              remaining: 4998,
+              used: 2,
+              reset: 1_775_526_400,
+            },
+          },
+        }),
+        stderr: "",
+        code: 0,
+        signal: null,
+        timedOut: false,
+      });
+
+      const result = yield* Effect.gen(function* () {
+        const gh = yield* GitHubCli;
+        return yield* gh.getUsageLimits({
+          cwd: "/repo",
+        });
+      });
+
+      assert.equal(result.source, "github");
+      assert.equal(result.available, true);
+      assert.deepStrictEqual(result.buckets, [
+        {
+          id: "core",
+          label: "REST API",
+          limit: 5000,
+          remaining: 4998,
+          used: 2,
+          resetsAt: "2026-04-10T18:00:00.000Z",
+        },
+      ]);
+      expect(mockedRunProcess).toHaveBeenCalledWith(
+        "gh",
+        ["api", "rate_limit"],
+        expect.objectContaining({ cwd: "/repo" }),
+      );
+    }),
+  );
 });

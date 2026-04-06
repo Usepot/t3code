@@ -46,6 +46,7 @@ import type {
 import { TerminalManager, type TerminalManagerShape } from "./terminal/Services/Manager";
 import { makeSqlitePersistenceLive, SqlitePersistenceMemory } from "./persistence/Layers/Sqlite";
 import { SqlClient, SqlError } from "effect/unstable/sql";
+import { CodexAdapter, type CodexAdapterShape } from "./provider/Services/CodexAdapter";
 import { ProviderService, type ProviderServiceShape } from "./provider/Services/ProviderService";
 import { ProviderRegistry, type ProviderRegistryShape } from "./provider/Services/ProviderRegistry";
 import { Open, type OpenShape } from "./open";
@@ -84,6 +85,33 @@ const defaultProviderRegistryService: ProviderRegistryShape = {
   getProviders: Effect.succeed(defaultProviderStatuses),
   refresh: () => Effect.succeed(defaultProviderStatuses),
   streamChanges: Stream.empty,
+};
+
+const defaultCodexAdapterService: CodexAdapterShape = {
+  provider: "codex",
+  capabilities: { sessionModelSwitch: "in-session" },
+  getUsageLimits: () =>
+    Effect.succeed({
+      source: "codex",
+      available: false,
+      checkedAt: "2026-04-06T00:00:00.000Z",
+      message: "No Codex session is active in this test.",
+      buckets: [],
+    }),
+  startSession: () => Effect.die(new Error("CodexAdapter.startSession is not used in test")),
+  sendTurn: () => Effect.die(new Error("CodexAdapter.sendTurn is not used in test")),
+  interruptTurn: () => Effect.die(new Error("CodexAdapter.interruptTurn is not used in test")),
+  respondToRequest: () =>
+    Effect.die(new Error("CodexAdapter.respondToRequest is not used in test")),
+  respondToUserInput: () =>
+    Effect.die(new Error("CodexAdapter.respondToUserInput is not used in test")),
+  stopSession: () => Effect.die(new Error("CodexAdapter.stopSession is not used in test")),
+  listSessions: () => Effect.succeed([]),
+  hasSession: () => Effect.succeed(false),
+  readThread: () => Effect.die(new Error("CodexAdapter.readThread is not used in test")),
+  rollbackThread: () => Effect.die(new Error("CodexAdapter.rollbackThread is not used in test")),
+  stopAll: () => Effect.void,
+  streamEvents: Stream.empty,
 };
 
 const defaultServerSettings = DEFAULT_SERVER_SETTINGS;
@@ -498,6 +526,7 @@ describe("WebSocket Server", () => {
       staticDir?: string;
       providerLayer?: Layer.Layer<ProviderService, never>;
       providerRegistry?: ProviderRegistryShape;
+      codexAdapter?: CodexAdapterShape;
       open?: OpenShape;
       gitManager?: GitManagerShape;
       gitCore?: Pick<GitCoreShape, "listBranches" | "initRepo" | "pullCurrentBranch">;
@@ -554,6 +583,9 @@ describe("WebSocket Server", () => {
     );
     const dependenciesLayer = Layer.empty.pipe(
       Layer.provideMerge(runtimeLayer),
+      Layer.provideMerge(
+        Layer.succeed(CodexAdapter, options.codexAdapter ?? defaultCodexAdapterService),
+      ),
       Layer.provideMerge(providerRegistryLayer),
       Layer.provideMerge(openLayer),
       Layer.provideMerge(ServerSettingsService.layerTest(options.serverSettings)),
@@ -671,6 +703,53 @@ describe("WebSocket Server", () => {
     const response = await fetch(`http://127.0.0.1:${port}/`);
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("static-root");
+  });
+
+  it("appends top-toast log entries to logs/toasts.log", async () => {
+    const baseDir = makeTempDir("t3code-state-toast-log-");
+    const { logsDir } = deriveServerPathsSync(baseDir, undefined);
+
+    server = await createTestServer({ cwd: "/test/project", baseDir });
+    const addr = server.address();
+    const port = typeof addr === "object" && addr !== null ? addr.port : 0;
+    expect(port).toBeGreaterThan(0);
+
+    const [ws] = await connectAndAwaitWelcome(port);
+    connections.push(ws);
+
+    const response = await sendRequest(ws, WS_METHODS.serverLogToast, {
+      createdAt: "2026-04-06T18:13:25.163Z",
+      position: "top-right",
+      type: "error",
+      title: "Linear MCP auth required",
+      description: "Missing or invalid access token",
+      threadId: "thread-1",
+      stackTrace: "Error: Toast created\n    at triggerToast\n    at onDomainEvent",
+    });
+
+    expect(response.error).toBeUndefined();
+
+    const toastLogPath = path.join(logsDir, "toasts.log");
+    expect(fs.existsSync(toastLogPath)).toBe(true);
+
+    const loggedEntries = fs
+      .readFileSync(toastLogPath, "utf8")
+      .trim()
+      .split("\n")
+      .filter((line) => line.length > 0)
+      .map((line) => JSON.parse(line) as Record<string, unknown>);
+
+    expect(loggedEntries).toEqual([
+      {
+        createdAt: "2026-04-06T18:13:25.163Z",
+        position: "top-right",
+        type: "error",
+        title: "Linear MCP auth required",
+        description: "Missing or invalid access token",
+        threadId: "thread-1",
+        stackTrace: "Error: Toast created\n    at triggerToast\n    at onDomainEvent",
+      },
+    ]);
   });
 
   it("rejects static path traversal attempts", async () => {

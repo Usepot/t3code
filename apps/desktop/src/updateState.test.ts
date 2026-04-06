@@ -98,6 +98,32 @@ describe("getAutoUpdateDisabledReason", () => {
       }),
     ).toContain("AppImage");
   });
+
+  it("reports missing app-update.yml as disabled", () => {
+    expect(
+      getAutoUpdateDisabledReason({
+        isDevelopment: false,
+        isPackaged: true,
+        platform: "darwin",
+        appImage: undefined,
+        disabledByEnv: false,
+        hasUpdateConfig: false,
+      }),
+    ).toContain("app-update.yml");
+  });
+
+  it("returns null when hasUpdateConfig is true", () => {
+    expect(
+      getAutoUpdateDisabledReason({
+        isDevelopment: false,
+        isPackaged: true,
+        platform: "darwin",
+        appImage: undefined,
+        disabledByEnv: false,
+        hasUpdateConfig: true,
+      }),
+    ).toBe(null);
+  });
 });
 
 describe("nextStatusAfterDownloadFailure", () => {

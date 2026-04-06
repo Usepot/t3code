@@ -10,6 +10,7 @@ import type { Effect } from "effect";
 
 import type { ProcessRunResult } from "../../processRunner";
 import type { GitHubCliError } from "../Errors.ts";
+import type { ServerUsageLimitsSnapshot } from "@t3tools/contracts";
 
 export interface GitHubPullRequestSummary {
   readonly number: number;
@@ -93,6 +94,13 @@ export interface GitHubCliShape {
     readonly reference: string;
     readonly force?: boolean;
   }) => Effect.Effect<void, GitHubCliError>;
+
+  /**
+   * Read current GitHub API rate-limit state through `gh api rate_limit`.
+   */
+  readonly getUsageLimits: (input: {
+    readonly cwd: string;
+  }) => Effect.Effect<ServerUsageLimitsSnapshot, GitHubCliError>;
 }
 
 /**

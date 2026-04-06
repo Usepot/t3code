@@ -9,7 +9,10 @@
  *
  * @module ProviderServiceLive
  */
+import { randomUUID } from "node:crypto";
+
 import {
+  EventId,
   ModelSelection,
   NonNegativeInt,
   ThreadId,
@@ -31,6 +34,7 @@ import {
   ProviderSessionDirectory,
   type ProviderRuntimeBinding,
 } from "../Services/ProviderSessionDirectory.ts";
+import { SubscriptionManager } from "../Services/SubscriptionManager.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { AnalyticsService } from "../../telemetry/Services/AnalyticsService.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
@@ -94,6 +98,7 @@ function toRuntimePayloadFromSession(
     readonly modelSelection?: unknown;
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
+    readonly subscriptionId?: string;
   },
 ): Record<string, unknown> {
   return {
@@ -106,6 +111,43 @@ function toRuntimePayloadFromSession(
     ...(extra?.lastRuntimeEventAt !== undefined
       ? { lastRuntimeEventAt: extra.lastRuntimeEventAt }
       : {}),
+    ...(extra?.subscriptionId !== undefined ? { subscriptionId: extra.subscriptionId } : {}),
+  };
+}
+
+function runtimePayloadRecord(event: ProviderRuntimeEvent): Record<string, unknown> | undefined {
+  return event.payload && typeof event.payload === "object" && !Array.isArray(event.payload)
+    ? (event.payload as Record<string, unknown>)
+    : undefined;
+}
+
+function makeFailoverRuntimeWarningEvent(input: {
+  readonly threadId: ThreadId;
+  readonly provider: ProviderSession["provider"];
+  readonly previousSubscriptionId: string | undefined;
+  readonly newSubscriptionId: string;
+  readonly message: string;
+  readonly detail?: unknown;
+}): ProviderRuntimeEvent {
+  return {
+    type: "runtime.warning",
+    eventId: EventId.makeUnsafe(`provider-failover-${randomUUID()}`),
+    provider: input.provider,
+    threadId: input.threadId,
+    createdAt: new Date().toISOString(),
+    payload: {
+      message: input.message,
+      ...(input.detail !== undefined ? { detail: input.detail } : {}),
+    },
+    raw: {
+      source: "copilot.sdk.synthetic",
+      method: "subscription/failover",
+      payload: {
+        previousSubscriptionId: input.previousSubscriptionId,
+        newSubscriptionId: input.newSubscriptionId,
+        ...(input.detail !== undefined ? { detail: input.detail } : {}),
+      },
+    },
   };
 }
 
@@ -135,6 +177,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
   Effect.gen(function* () {
     const analytics = yield* Effect.service(AnalyticsService);
     const serverSettings = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
     const canonicalEventLogger =
       options?.canonicalEventLogger ??
       (options?.canonicalEventLogPath !== undefined
@@ -166,13 +209,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         readonly lastRuntimeEventAt?: string;
       },
     ) =>
-      directory.upsert({
-        threadId,
-        provider: session.provider,
-        runtimeMode: session.runtimeMode,
-        status: toRuntimeStatus(session),
-        ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
-        runtimePayload: toRuntimePayloadFromSession(session, extra),
+      Effect.gen(function* () {
+        const activeSubscription = yield* subscriptionManager
+          .getActiveSubscription(session.provider)
+          .pipe(Effect.orElseSucceed(() => undefined));
+        yield* directory.upsert({
+          threadId,
+          provider: session.provider,
+          runtimeMode: session.runtimeMode,
+          status: toRuntimeStatus(session),
+          ...(session.resumeCursor !== undefined ? { resumeCursor: session.resumeCursor } : {}),
+          runtimePayload: toRuntimePayloadFromSession(session, {
+            ...extra,
+            ...(activeSubscription?.id ? { subscriptionId: activeSubscription.id } : {}),
+          }),
+        });
       });
 
     const providers = yield* registry.listProviders();
@@ -180,7 +231,86 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       registry.getByProvider(provider),
     );
     const processRuntimeEvent = (event: ProviderRuntimeEvent): Effect.Effect<void> =>
-      publishRuntimeEvent(event);
+      Effect.gen(function* () {
+        yield* publishRuntimeEvent(event);
+
+        if (event.type !== "account.rate-limits.updated") {
+          return;
+        }
+
+        const switchEvent = yield* subscriptionManager
+          .handleRateLimitEvent(event.provider, runtimePayloadRecord(event)?.rateLimits)
+          .pipe(Effect.catch(() => Effect.void));
+        if (!switchEvent) {
+          return;
+        }
+
+        const binding = Option.getOrUndefined(
+          yield* directory
+            .getBinding(event.threadId)
+            .pipe(Effect.catch(() => Effect.succeed(Option.none<ProviderRuntimeBinding>()))),
+        );
+        if (!binding || binding.provider !== event.provider) {
+          return;
+        }
+
+        const adapter = yield* registry.getByProvider(binding.provider);
+        const hasActiveSession = yield* adapter.hasSession(binding.threadId);
+        if (hasActiveSession) {
+          yield* adapter.stopSession(binding.threadId).pipe(Effect.catch(() => Effect.void));
+        }
+
+        const recovered = yield* recoverSessionForThread({
+          binding,
+          operation: "ProviderService.handleRateLimitEvent",
+        }).pipe(Effect.catch(() => Effect.void));
+
+        if (!recovered) {
+          yield* publishRuntimeEvent(
+            makeFailoverRuntimeWarningEvent({
+              threadId: event.threadId,
+              provider: event.provider,
+              previousSubscriptionId: switchEvent.previousSubscriptionId,
+              newSubscriptionId: switchEvent.newSubscriptionId,
+              message:
+                "Rate limit detected and a subscription switch was selected, but the session could not be resumed automatically.",
+              detail: runtimePayloadRecord(event)?.rateLimits,
+            }),
+          );
+          return;
+        }
+
+        yield* upsertSessionBinding(recovered.session, binding.threadId, {
+          modelSelection: readPersistedModelSelection(binding.runtimePayload),
+          lastRuntimeEvent: "provider.subscription.failover",
+          lastRuntimeEventAt: new Date().toISOString(),
+        });
+        yield* analytics.record("provider.subscription.switched", {
+          provider: event.provider,
+          reason: switchEvent.reason,
+          previousSubscriptionId: switchEvent.previousSubscriptionId,
+          newSubscriptionId: switchEvent.newSubscriptionId,
+        });
+        yield* publishRuntimeEvent(
+          makeFailoverRuntimeWarningEvent({
+            threadId: event.threadId,
+            provider: event.provider,
+            previousSubscriptionId: switchEvent.previousSubscriptionId,
+            newSubscriptionId: switchEvent.newSubscriptionId,
+            message: `Switched ${event.provider} subscription from '${switchEvent.previousSubscriptionId ?? "default"}' to '${switchEvent.newSubscriptionId}' after a rate limit event.`,
+            detail: runtimePayloadRecord(event)?.rateLimits,
+          }),
+        );
+      }).pipe(
+        Effect.catch((cause) =>
+          Effect.logWarning("failed to process provider runtime event", {
+            cause,
+            eventType: event.type,
+            provider: event.provider,
+            threadId: event.threadId,
+          }),
+        ),
+      );
 
     const worker = Effect.forever(
       Queue.take(runtimeEventQueue).pipe(Effect.flatMap(processRuntimeEvent)),
@@ -243,7 +373,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           );
         }
 
-        yield* upsertSessionBinding(resumed, input.binding.threadId);
+        yield* upsertSessionBinding(resumed, input.binding.threadId, {
+          modelSelection: persistedModelSelection,
+        });
         yield* analytics.record("provider.session.recovered", {
           provider: resumed.provider,
           strategy: "resume-thread",
@@ -368,6 +500,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           allowRecovery: true,
         });
         const turn = yield* routed.adapter.sendTurn(input);
+        const activeSubscription = yield* subscriptionManager
+          .getActiveSubscription(routed.adapter.provider)
+          .pipe(Effect.orElseSucceed(() => undefined));
         yield* directory.upsert({
           threadId: input.threadId,
           provider: routed.adapter.provider,
@@ -378,6 +513,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             activeTurnId: turn.turnId,
             lastRuntimeEvent: "provider.sendTurn",
             lastRuntimeEventAt: new Date().toISOString(),
+            ...(activeSubscription?.id ? { subscriptionId: activeSubscription.id } : {}),
           },
         });
         yield* analytics.record("provider.turn.sent", {

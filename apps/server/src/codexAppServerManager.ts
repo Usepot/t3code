@@ -515,11 +515,16 @@ export interface CodexAppServerManagerEvents {
 
 export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEvents> {
   private readonly sessions = new Map<ThreadId, CodexSessionContext>();
+  private latestRateLimits: unknown | null = null;
 
   private runPromise: (effect: Effect.Effect<unknown, never>) => Promise<unknown>;
   constructor(services?: ServiceMap.ServiceMap<never>) {
     super();
     this.runPromise = services ? Effect.runPromiseWith(services) : Effect.runPromise;
+  }
+
+  getLatestRateLimits(): unknown | null {
+    return this.latestRateLimits;
   }
 
   async startSession(input: CodexAppServerStartSessionInput): Promise<ProviderSession> {
@@ -601,6 +606,13 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         });
       } catch (error) {
         console.log("codex account/read failed", error);
+      }
+      try {
+        const rateLimitsResponse = await this.sendRequest(context, "account/rateLimits/read", {});
+        this.rememberRateLimitsSnapshot(rateLimitsResponse);
+        console.log("codex account/rateLimits/read response", rateLimitsResponse);
+      } catch (error) {
+        console.log("codex account/rateLimits/read failed", error);
       }
 
       const normalizedModel = resolveCodexModelForAccount(
@@ -1202,6 +1214,11 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
         status: willRetry ? "running" : "error",
         lastError: message ?? context.session.lastError,
       });
+      return;
+    }
+
+    if (notification.method === "account/rateLimits/updated") {
+      this.rememberRateLimitsSnapshot(notification.params);
     }
   }
 
@@ -1356,6 +1373,10 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   private emitEvent(event: ProviderEvent): void {
     this.emit("event", event);
+  }
+
+  private rememberRateLimitsSnapshot(snapshot: unknown): void {
+    this.latestRateLimits = snapshot;
   }
 
   private assertSupportedCodexCliVersion(input: {

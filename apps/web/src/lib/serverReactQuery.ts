@@ -4,6 +4,7 @@ import { ensureNativeApi } from "~/nativeApi";
 export const serverQueryKeys = {
   all: ["server"] as const,
   config: () => ["server", "config"] as const,
+  usageLimits: () => ["server", "usageLimits"] as const,
 };
 
 /**
@@ -19,6 +20,16 @@ export function serverConfigQueryOptions() {
     queryFn: async () => {
       const api = ensureNativeApi();
       return api.server.getConfig();
+    },
+  });
+}
+
+export function serverUsageLimitsQueryOptions() {
+  return queryOptions({
+    queryKey: serverQueryKeys.usageLimits(),
+    queryFn: async () => {
+      const api = ensureNativeApi();
+      return api.server.getUsageLimits();
     },
   });
 }

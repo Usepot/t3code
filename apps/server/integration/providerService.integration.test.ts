@@ -13,6 +13,7 @@ import {
   ProviderService,
   type ProviderServiceShape,
 } from "../src/provider/Services/ProviderService.ts";
+import { SubscriptionManager } from "../src/provider/Services/SubscriptionManager.ts";
 import { ServerSettingsService } from "../src/serverSettings.ts";
 import { AnalyticsService } from "../src/telemetry/Services/AnalyticsService.ts";
 import { SqlitePersistenceMemory } from "../src/persistence/Layers/Sqlite.ts";
@@ -63,6 +64,7 @@ const makeIntegrationFixture = Effect.gen(function* () {
     directoryLayer,
     Layer.succeed(ProviderAdapterRegistry, registry),
     ServerSettingsService.layerTest(DEFAULT_SERVER_SETTINGS),
+    SubscriptionManager.layerTest(),
     AnalyticsService.layerTest,
   ).pipe(Layer.provide(SqlitePersistenceMemory));
 

@@ -17,7 +17,9 @@ import {
 import { cn } from "~/lib/utils";
 import { buttonVariants } from "~/components/ui/button";
 import { useCopyToClipboard } from "~/hooks/useCopyToClipboard";
+import { readNativeApi } from "~/nativeApi";
 import { buildVisibleToastLayout, shouldHideCollapsedToastContent } from "./toast.logic";
+import { captureToastStackTrace, logToastToServer } from "./toastLogging";
 
 type ThreadToastData = {
   threadId?: ThreadId | null;
@@ -29,6 +31,15 @@ const toastManager = Toast.createToastManager<ThreadToastData>();
 const anchoredToastManager = Toast.createToastManager<ThreadToastData>();
 type ToastId = ReturnType<typeof toastManager.add>;
 const threadToastVisibleTimeoutRemainingMs = new Map<ToastId, number>();
+const threadToastCreationStackTraceById = new Map<ToastId, string>();
+const loggedTopToastIds = new Set<ToastId>();
+
+const rawTopToastManagerAdd = toastManager.add.bind(toastManager);
+toastManager.add = ((...args: Parameters<typeof rawTopToastManagerAdd>) => {
+  const toastId = rawTopToastManagerAdd(...args);
+  threadToastCreationStackTraceById.set(toastId, captureToastStackTrace());
+  return toastId;
+}) as typeof toastManager.add;
 
 const TOAST_ICONS = {
   error: CircleAlertIcon,
@@ -189,7 +200,37 @@ function Toasts({ position = "top-right" }: { position: ToastPosition }) {
         threadToastVisibleTimeoutRemainingMs.delete(toastId);
       }
     }
+    for (const toastId of threadToastCreationStackTraceById.keys()) {
+      if (!activeToastIds.has(toastId)) {
+        threadToastCreationStackTraceById.delete(toastId);
+      }
+    }
+    for (const toastId of loggedTopToastIds.keys()) {
+      if (!activeToastIds.has(toastId)) {
+        loggedTopToastIds.delete(toastId);
+      }
+    }
   }, [toasts]);
+
+  useEffect(() => {
+    const api = readNativeApi();
+    for (const toast of visibleToasts) {
+      if (loggedTopToastIds.has(toast.id)) {
+        continue;
+      }
+      loggedTopToastIds.add(toast.id);
+      void logToastToServer(api, {
+        position,
+        title: toast.title,
+        ...(toast.type ? { type: toast.type } : {}),
+        ...(toast.description !== undefined ? { description: toast.description } : {}),
+        ...(toast.data?.threadId ? { threadId: toast.data.threadId } : {}),
+        stackTrace: threadToastCreationStackTraceById.get(toast.id) ?? captureToastStackTrace(),
+      }).catch(() => {
+        // Keep toast rendering unaffected by log write failures.
+      });
+    }
+  }, [position, visibleToasts]);
 
   return (
     <Toast.Portal data-slot="toast-portal">

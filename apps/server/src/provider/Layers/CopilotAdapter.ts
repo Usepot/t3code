@@ -32,6 +32,7 @@ import { Effect, Exit, Layer, Queue, Scope, Stream } from "effect";
 import { resolveAttachmentPath } from "../../attachmentStore.ts";
 import { ServerConfig } from "../../config.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { SubscriptionManager } from "../Services/SubscriptionManager.ts";
 import {
   ProviderAdapterProcessError,
   ProviderAdapterRequestError,
@@ -840,6 +841,7 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
   Effect.gen(function* () {
     const serverConfig = yield* ServerConfig;
     const serverSettings = yield* ServerSettingsService;
+    const subscriptionManager = yield* SubscriptionManager;
     const nativeEventLogger = options?.nativeEventLogger;
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, ActiveCopilotSession>();
@@ -1694,8 +1696,14 @@ const makeCopilotAdapter = (options?: CopilotAdapterLiveOptions) =>
               }),
           ),
         );
+        const effectiveConfigPath = yield* subscriptionManager
+          .getEffectiveConfigPath(PROVIDER)
+          .pipe(Effect.orElseSucceed(() => copilotSettings.configDir || undefined));
         const { clientOptions, configDir } = resolveCopilotRuntimeConfig(
-          copilotSettings,
+          {
+            ...copilotSettings,
+            configDir: effectiveConfigPath ?? "",
+          },
           input.cwd,
         );
         const resumeSessionId = extractResumeSessionId(input.resumeCursor);

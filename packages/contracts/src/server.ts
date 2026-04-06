@@ -1,5 +1,5 @@
 import { Schema } from "effect";
-import { IsoDateTime, TrimmedNonEmptyString } from "./baseSchemas";
+import { IsoDateTime, NonNegativeInt, ThreadId, TrimmedNonEmptyString } from "./baseSchemas";
 import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings";
 import { EditorId } from "./editor";
 import { ModelCapabilities } from "./model";
@@ -43,6 +43,36 @@ export const ServerProviderModel = Schema.Struct({
 });
 export type ServerProviderModel = typeof ServerProviderModel.Type;
 
+export const ServerUsageLimitBucket = Schema.Struct({
+  id: TrimmedNonEmptyString,
+  label: TrimmedNonEmptyString,
+  limit: Schema.optional(NonNegativeInt),
+  remaining: Schema.optional(NonNegativeInt),
+  used: Schema.optional(NonNegativeInt),
+  usedPercent: Schema.optional(Schema.Number),
+  resetsAt: Schema.optional(IsoDateTime),
+  windowDurationMins: Schema.optional(NonNegativeInt),
+});
+export type ServerUsageLimitBucket = typeof ServerUsageLimitBucket.Type;
+
+export const ServerUsageLimitSource = Schema.Literals(["codex", "github"]);
+export type ServerUsageLimitSource = typeof ServerUsageLimitSource.Type;
+
+export const ServerUsageLimitsSnapshot = Schema.Struct({
+  source: ServerUsageLimitSource,
+  available: Schema.Boolean,
+  checkedAt: IsoDateTime,
+  message: Schema.optional(TrimmedNonEmptyString),
+  buckets: Schema.Array(ServerUsageLimitBucket),
+});
+export type ServerUsageLimitsSnapshot = typeof ServerUsageLimitsSnapshot.Type;
+
+export const ServerUsageLimits = Schema.Struct({
+  codex: ServerUsageLimitsSnapshot,
+  github: ServerUsageLimitsSnapshot,
+});
+export type ServerUsageLimits = typeof ServerUsageLimits.Type;
+
 export const ServerProvider = Schema.Struct({
   provider: ProviderKind,
   enabled: Schema.Boolean,
@@ -84,7 +114,21 @@ export const ServerConfigUpdatedPayload = Schema.Struct({
 });
 export type ServerConfigUpdatedPayload = typeof ServerConfigUpdatedPayload.Type;
 
+export const ServerUsageLimitsPayload = ServerUsageLimits;
+export type ServerUsageLimitsPayload = typeof ServerUsageLimitsPayload.Type;
+
 export const ServerProviderUpdatedPayload = Schema.Struct({
   providers: ServerProviders,
 });
 export type ServerProviderUpdatedPayload = typeof ServerProviderUpdatedPayload.Type;
+
+export const ServerLogToastInput = Schema.Struct({
+  createdAt: IsoDateTime,
+  position: TrimmedNonEmptyString,
+  title: Schema.String,
+  description: Schema.optional(Schema.String),
+  type: Schema.optional(TrimmedNonEmptyString),
+  threadId: Schema.optional(ThreadId),
+  stackTrace: Schema.String,
+});
+export type ServerLogToastInput = typeof ServerLogToastInput.Type;
