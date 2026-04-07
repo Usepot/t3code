@@ -150,7 +150,7 @@ export class SubscriptionManager extends ServiceMap.Service<
       markRateLimited: () => Effect.void,
       clearRateLimit: () => Effect.void,
       switchSubscription: () => Effect.void,
-      handleRateLimitEvent: () => Effect.succeed(undefined),
+      handleRateLimitEvent: () => Effect.as(Effect.void, undefined),
       streamSwitchEvents: Stream.empty,
       streamRateLimitEvents: Stream.empty,
       getSubscriptions: (provider) =>

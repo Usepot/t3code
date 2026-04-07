@@ -39,6 +39,7 @@ import { ProjectSearchEntriesInput, ProjectWriteFileInput } from "./project";
 import { OpenInEditorInput } from "./editor";
 import {
   ServerConfigUpdatedPayload,
+  ServerCreateProviderSubscriptionInput,
   ServerLogToastInput,
   ServerProviderUpdatedPayload,
 } from "./server";
@@ -85,6 +86,7 @@ export const WS_METHODS = {
   serverUpsertKeybinding: "server.upsertKeybinding",
   serverGetSettings: "server.getSettings",
   serverUpdateSettings: "server.updateSettings",
+  serverCreateProviderSubscription: "server.createProviderSubscription",
   serverLogToast: "server.logToast",
 } as const;
 
@@ -156,6 +158,10 @@ const WebSocketRequestBody = Schema.Union([
   tagRequestBody(WS_METHODS.serverUpsertKeybinding, KeybindingRule),
   tagRequestBody(WS_METHODS.serverGetSettings, Schema.Struct({})),
   tagRequestBody(WS_METHODS.serverUpdateSettings, Schema.Struct({ patch: ServerSettingsPatch })),
+  tagRequestBody(
+    WS_METHODS.serverCreateProviderSubscription,
+    ServerCreateProviderSubscriptionInput,
+  ),
   tagRequestBody(WS_METHODS.serverLogToast, ServerLogToastInput),
 ]);
 

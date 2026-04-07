@@ -4,7 +4,7 @@ import { KeybindingRule, ResolvedKeybindingsConfig } from "./keybindings";
 import { EditorId } from "./editor";
 import { ModelCapabilities } from "./model";
 import { ProviderKind } from "./orchestration";
-import { ServerSettings } from "./settings";
+import { ProviderSubscription, ServerSettings } from "./settings";
 
 const KeybindingsMalformedConfigIssue = Schema.Struct({
   kind: Schema.Literal("keybindings.malformed-config"),
@@ -132,3 +132,17 @@ export const ServerLogToastInput = Schema.Struct({
   stackTrace: Schema.String,
 });
 export type ServerLogToastInput = typeof ServerLogToastInput.Type;
+
+export const ServerCreateProviderSubscriptionInput = Schema.Struct({
+  provider: ProviderKind,
+  name: Schema.optional(TrimmedNonEmptyString),
+});
+export type ServerCreateProviderSubscriptionInput =
+  typeof ServerCreateProviderSubscriptionInput.Type;
+
+export const ServerCreateProviderSubscriptionResult = Schema.Struct({
+  subscription: ProviderSubscription,
+  settings: ServerSettings,
+});
+export type ServerCreateProviderSubscriptionResult =
+  typeof ServerCreateProviderSubscriptionResult.Type;

@@ -215,6 +215,8 @@ export function createWsNativeApi(): NativeApi {
       upsertKeybinding: (input) => transport.request(WS_METHODS.serverUpsertKeybinding, input),
       getSettings: () => transport.request(WS_METHODS.serverGetSettings),
       updateSettings: (patch) => transport.request(WS_METHODS.serverUpdateSettings, { patch }),
+      createProviderSubscription: (input) =>
+        transport.request(WS_METHODS.serverCreateProviderSubscription, input),
       logToast: (input) => transport.request(WS_METHODS.serverLogToast, input),
     },
     orchestration: {

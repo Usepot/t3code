@@ -15,6 +15,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type ProviderKind,
   type ProviderSubscription,
+  type ServerConfig,
   type ServerProvider,
   type ServerProviderModel,
   type ServerUsageLimitBucket,
@@ -43,6 +44,7 @@ import { Switch } from "../components/ui/switch";
 import { ProviderModelPicker } from "../components/chat/ProviderModelPicker";
 import { TraitsPicker } from "../components/chat/TraitsPicker";
 import { SidebarInset } from "../components/ui/sidebar";
+import { toastManager } from "../components/ui/toast";
 import { Tooltip, TooltipPopup, TooltipTrigger } from "../components/ui/tooltip";
 import { resolveAndPersistPreferredEditor } from "../editorPreferences";
 import { isElectron } from "../env";
@@ -361,6 +363,30 @@ function makeDefaultSubscription(provider: ProviderKind, index: number): Provide
   };
 }
 
+function getSubscriptionDescription(provider: ProviderKind): string {
+  if (provider === "codex") {
+    return "Configure multiple authenticated config directories so T3 Code can switch accounts automatically when this provider reports a rate limit. Sign in opens the Codex browser/device flow and accepts Codex-included ChatGPT subscriptions.";
+  }
+
+  return "Configure multiple authenticated config directories so T3 Code can switch accounts automatically when this provider reports a rate limit. The recommended path is to let T3 Code create an account directory and start browser sign-in for you.";
+}
+
+function getSubscriptionToastDescription(provider: ProviderKind): string {
+  if (provider === "codex") {
+    return "A new account slot was created and the Codex browser/device sign-in flow was started.";
+  }
+
+  return "A browser login flow was opened for a new account slot.";
+}
+
+function getEmptySubscriptionStateDescription(provider: ProviderKind): string {
+  if (provider === "codex") {
+    return "No subscriptions configured. Click Sign in to create an account slot automatically for a Codex or ChatGPT subscription, or use Manual if you already have a CODEX_HOME directory you want to reuse.";
+  }
+
+  return "No subscriptions configured. Click Sign in to create an account slot automatically, or use Manual if you already have a config directory you want to reuse.";
+}
+
 function SettingResetButton({ label, onClick }: { label: string; onClick: () => void }) {
   return (
     <Tooltip>
@@ -427,6 +453,13 @@ function SettingsRouteView() {
   >({});
   const [isRefreshingProviders, setIsRefreshingProviders] = useState(false);
   const [isRefreshingUsageLimits, setIsRefreshingUsageLimits] = useState(false);
+  const [isCreatingSubscriptionByProvider, setIsCreatingSubscriptionByProvider] = useState<
+    Record<ProviderKind, boolean>
+  >({
+    codex: false,
+    claudeAgent: false,
+    copilot: false,
+  });
   const refreshingRef = useRef(false);
   const refreshingUsageLimitsRef = useRef(false);
   const queryClient = useQueryClient();
@@ -647,7 +680,7 @@ function SettingsRouteView() {
     [settings, updateSettings],
   );
 
-  const addSubscription = useCallback(
+  const addManualSubscription = useCallback(
     (provider: ProviderKind) => {
       const subscriptions = settings.providers[provider].subscriptions;
       updateProviderSubscriptions(provider, [
@@ -660,6 +693,56 @@ function SettingsRouteView() {
       }));
     },
     [settings, updateProviderSubscriptions],
+  );
+
+  const createSubscription = useCallback(
+    (provider: ProviderKind) => {
+      if (isCreatingSubscriptionByProvider[provider]) {
+        return;
+      }
+
+      setIsCreatingSubscriptionByProvider((existing) => ({
+        ...existing,
+        [provider]: true,
+      }));
+
+      void ensureNativeApi()
+        .server.createProviderSubscription({ provider })
+        .then((result) => {
+          queryClient.setQueryData<ServerConfig>(serverQueryKeys.config(), (existing) =>
+            existing
+              ? {
+                  ...existing,
+                  settings: result.settings,
+                }
+              : existing,
+          );
+          setOpenProviderDetails((existing) => ({
+            ...existing,
+            [provider]: true,
+          }));
+          toastManager.add({
+            type: "success",
+            title: `${PROVIDER_DISPLAY_NAMES[provider]} sign-in started`,
+            description: getSubscriptionToastDescription(provider),
+          });
+        })
+        .catch((error: unknown) => {
+          toastManager.add({
+            type: "error",
+            title: `Failed to start ${PROVIDER_DISPLAY_NAMES[provider]} sign-in`,
+            description:
+              error instanceof Error ? error.message : "Unable to create a provider account slot.",
+          });
+        })
+        .finally(() => {
+          setIsCreatingSubscriptionByProvider((existing) => ({
+            ...existing,
+            [provider]: false,
+          }));
+        });
+    },
+    [isCreatingSubscriptionByProvider, queryClient],
   );
 
   const updateSubscription = useCallback(
@@ -1352,27 +1435,38 @@ function SettingsRouteView() {
                                   Subscriptions
                                 </div>
                                 <div className="mt-1 text-xs text-muted-foreground">
-                                  Configure multiple authenticated config directories so T3 Code can
-                                  switch accounts automatically when this provider reports a rate
-                                  limit.
+                                  {getSubscriptionDescription(providerCard.provider)}
                                 </div>
                               </div>
-                              <Button
-                                size="xs"
-                                variant="outline"
-                                className="shrink-0"
-                                onClick={() => addSubscription(providerCard.provider)}
-                              >
-                                <PlusIcon className="size-3.5" />
-                                Add
-                              </Button>
+                              <div className="flex shrink-0 items-center gap-2">
+                                <Button
+                                  size="xs"
+                                  className="shrink-0"
+                                  disabled={isCreatingSubscriptionByProvider[providerCard.provider]}
+                                  onClick={() => createSubscription(providerCard.provider)}
+                                >
+                                  {isCreatingSubscriptionByProvider[providerCard.provider] ? (
+                                    <LoaderIcon className="size-3.5 animate-spin" />
+                                  ) : (
+                                    <PlusIcon className="size-3.5" />
+                                  )}
+                                  Sign in
+                                </Button>
+                                <Button
+                                  size="xs"
+                                  variant="outline"
+                                  className="shrink-0"
+                                  onClick={() => addManualSubscription(providerCard.provider)}
+                                >
+                                  Manual
+                                </Button>
+                              </div>
                             </div>
 
                             <div className="mt-3 space-y-3">
                               {providerCard.providerConfig.subscriptions.length === 0 ? (
                                 <div className="rounded-xl border border-dashed border-border/70 bg-background/60 px-3 py-3 text-xs text-muted-foreground">
-                                  No subscriptions configured. T3 Code will keep using the legacy
-                                  single-account path for this provider.
+                                  {getEmptySubscriptionStateDescription(providerCard.provider)}
                                 </div>
                               ) : (
                                 providerCard.providerConfig.subscriptions.map(

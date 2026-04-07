@@ -27,6 +27,8 @@ import type {
 } from "./project";
 import type {
   ServerConfig,
+  ServerCreateProviderSubscriptionInput,
+  ServerCreateProviderSubscriptionResult,
   ServerLogToastInput,
   ServerProviderUpdatedPayload,
   ServerUsageLimitsPayload,
@@ -172,6 +174,9 @@ export interface NativeApi {
     upsertKeybinding: (input: ServerUpsertKeybindingInput) => Promise<ServerUpsertKeybindingResult>;
     getSettings: () => Promise<ServerSettings>;
     updateSettings: (patch: ServerSettingsPatch) => Promise<ServerSettings>;
+    createProviderSubscription: (
+      input: ServerCreateProviderSubscriptionInput,
+    ) => Promise<ServerCreateProviderSubscriptionResult>;
     logToast: (input: ServerLogToastInput) => Promise<void>;
   };
   orchestration: {
